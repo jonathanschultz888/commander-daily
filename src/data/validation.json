@@ -1,0 +1,365 @@
+{
+  "generated": "2026-10-15T14:53:06.114Z",
+  "gameChangers": 53,
+  "globalMissing": [],
+  "decks": [
+    {
+      "id": "squirrel-swarm",
+      "name": "Squirrel Swarm",
+      "bracket": 1,
+      "declaredCount": 96,
+      "gameChangers": [],
+      "illegal": [],
+      "unresolved": [],
+      "offColor": [],
+      "cardCount": 100,
+      "profile": {
+        "gameChangers": [],
+        "massLandDenial": [],
+        "extraTurns": [],
+        "combos": [
+          {
+            "name": "Doubling Season + token maker",
+            "cards": [
+              "doubling season",
+              "deranged hermit"
+            ],
+            "kills": false,
+            "minBracket": 3,
+            "description": "Token creation doubles, then doubles again with Parallel Lives."
+          }
+        ],
+        "violations": []
+      },
+      "violations": []
+    },
+    {
+      "id": "sea-monsters",
+      "name": "The Deep End",
+      "bracket": 1,
+      "declaredCount": 96,
+      "gameChangers": [],
+      "illegal": [],
+      "unresolved": [],
+      "offColor": [],
+      "cardCount": 100,
+      "profile": {
+        "gameChangers": [],
+        "massLandDenial": [],
+        "extraTurns": [],
+        "combos": [],
+        "violations": []
+      },
+      "violations": []
+    },
+    {
+      "id": "kemba-equipment",
+      "name": "Kemba's Pride",
+      "bracket": 2,
+      "declaredCount": 99,
+      "gameChangers": [],
+      "illegal": [],
+      "unresolved": [],
+      "offColor": [],
+      "cardCount": 100,
+      "profile": {
+        "gameChangers": [],
+        "massLandDenial": [],
+        "extraTurns": [],
+        "combos": [],
+        "violations": []
+      },
+      "violations": []
+    },
+    {
+      "id": "torbran-burn",
+      "name": "Everything Burns",
+      "bracket": 2,
+      "declaredCount": 97,
+      "gameChangers": [],
+      "illegal": [],
+      "unresolved": [],
+      "offColor": [],
+      "cardCount": 100,
+      "profile": {
+        "gameChangers": [],
+        "massLandDenial": [],
+        "extraTurns": [],
+        "combos": [],
+        "violations": []
+      },
+      "violations": []
+    },
+    {
+      "id": "teysa-aristocrats",
+      "name": "Death Is a Resource",
+      "bracket": 3,
+      "declaredCount": 100,
+      "gameChangers": [
+        "Smothering Tithe",
+        "Demonic Tutor"
+      ],
+      "illegal": [],
+      "unresolved": [],
+      "offColor": [],
+      "cardCount": 100,
+      "profile": {
+        "gameChangers": [
+          "Smothering Tithe",
+          "Demonic Tutor"
+        ],
+        "massLandDenial": [],
+        "extraTurns": [],
+        "combos": [
+          {
+            "name": "Sanguine Bond + lifelink",
+            "cards": [
+              "sanguine bond",
+              "wurmcoil engine"
+            ],
+            "kills": false,
+            "minBracket": 3,
+            "description": "Every lifelink swing becomes a drain too."
+          }
+        ],
+        "violations": []
+      },
+      "violations": []
+    },
+    {
+      "id": "omnath-landfall",
+      "name": "The Land Reaches Back",
+      "bracket": 3,
+      "declaredCount": 95,
+      "gameChangers": [
+        "Ancient Tomb"
+      ],
+      "illegal": [],
+      "unresolved": [],
+      "offColor": [],
+      "cardCount": 100,
+      "profile": {
+        "gameChangers": [
+          "Ancient Tomb"
+        ],
+        "massLandDenial": [],
+        "extraTurns": [],
+        "combos": [],
+        "violations": []
+      },
+      "violations": []
+    },
+    {
+      "id": "yuriko-tempo",
+      "name": "Ninjutsu Tempo",
+      "bracket": 4,
+      "declaredCount": 104,
+      "gameChangers": [
+        "Force of Will",
+        "Fierce Guardianship",
+        "Cyclonic Rift",
+        "Vampiric Tutor",
+        "Demonic Tutor",
+        "Notion Thief"
+      ],
+      "illegal": [],
+      "unresolved": [],
+      "offColor": [],
+      "cardCount": 100,
+      "profile": {
+        "gameChangers": [
+          "Force of Will",
+          "Fierce Guardianship",
+          "Cyclonic Rift",
+          "Vampiric Tutor",
+          "Demonic Tutor",
+          "Notion Thief"
+        ],
+        "massLandDenial": [],
+        "extraTurns": [
+          "Temporal Trespass"
+        ],
+        "combos": [],
+        "violations": []
+      },
+      "violations": []
+    },
+    {
+      "id": "winota-aggro",
+      "name": "No Humans Allowed",
+      "bracket": 4,
+      "declaredCount": 98,
+      "gameChangers": [],
+      "illegal": [],
+      "unresolved": [],
+      "offColor": [],
+      "cardCount": 100,
+      "profile": {
+        "gameChangers": [],
+        "massLandDenial": [],
+        "extraTurns": [],
+        "combos": [],
+        "violations": []
+      },
+      "violations": []
+    },
+    {
+      "id": "kess-storm",
+      "name": "Storm Logic",
+      "bracket": 5,
+      "declaredCount": 88,
+      "gameChangers": [
+        "Ad Nauseam",
+        "Underworld Breach",
+        "Lion's Eye Diamond",
+        "Mana Vault",
+        "Grim Monolith",
+        "Chrome Mox",
+        "Mox Diamond",
+        "Demonic Tutor",
+        "Vampiric Tutor",
+        "Mystical Tutor",
+        "Imperial Seal",
+        "Thassa's Oracle",
+        "Force of Will",
+        "Fierce Guardianship",
+        "Necropotence",
+        "Bolas's Citadel",
+        "Jeska's Will",
+        "Gamble",
+        "Notion Thief",
+        "Rhystic Study",
+        "Cyclonic Rift"
+      ],
+      "illegal": [],
+      "unresolved": [],
+      "offColor": [],
+      "cardCount": 100,
+      "profile": {
+        "gameChangers": [
+          "Ad Nauseam",
+          "Underworld Breach",
+          "Lion's Eye Diamond",
+          "Mana Vault",
+          "Grim Monolith",
+          "Chrome Mox",
+          "Mox Diamond",
+          "Demonic Tutor",
+          "Vampiric Tutor",
+          "Mystical Tutor",
+          "Imperial Seal",
+          "Thassa's Oracle",
+          "Force of Will",
+          "Fierce Guardianship",
+          "Necropotence",
+          "Bolas's Citadel",
+          "Jeska's Will",
+          "Gamble",
+          "Notion Thief",
+          "Rhystic Study",
+          "Cyclonic Rift"
+        ],
+        "massLandDenial": [],
+        "extraTurns": [],
+        "combos": [
+          {
+            "name": "Thassa's Oracle + Demonic Consultation",
+            "cards": [
+              "thassa's oracle",
+              "demonic consultation"
+            ],
+            "kills": true,
+            "minBracket": 4,
+            "description": "Exile your library, then win with an empty library."
+          },
+          {
+            "name": "Thassa's Oracle + Tainted Pact",
+            "cards": [
+              "thassa's oracle",
+              "tainted pact"
+            ],
+            "kills": true,
+            "minBracket": 4,
+            "description": "Exile your library, then win with an empty library."
+          },
+          {
+            "name": "Underworld Breach + Lion's Eye Diamond",
+            "cards": [
+              "underworld breach",
+              "lion's eye diamond"
+            ],
+            "kills": true,
+            "minBracket": 4,
+            "requiresMore": [
+              "brain freeze"
+            ],
+            "description": "Breach + LED loops Brain Freeze out of the graveyard into a mill-out."
+          }
+        ],
+        "violations": []
+      },
+      "violations": []
+    },
+    {
+      "id": "godo-helm",
+      "name": "One Combat Is Enough",
+      "bracket": 5,
+      "declaredCount": 96,
+      "gameChangers": [
+        "Mana Vault",
+        "Grim Monolith",
+        "Chrome Mox",
+        "Mox Diamond",
+        "Lion's Eye Diamond",
+        "Gamble",
+        "Jeska's Will",
+        "Ancient Tomb"
+      ],
+      "illegal": [],
+      "unresolved": [],
+      "offColor": [],
+      "cardCount": 100,
+      "profile": {
+        "gameChangers": [
+          "Mana Vault",
+          "Grim Monolith",
+          "Chrome Mox",
+          "Mox Diamond",
+          "Lion's Eye Diamond",
+          "Gamble",
+          "Jeska's Will",
+          "Ancient Tomb"
+        ],
+        "massLandDenial": [
+          "Blood Moon",
+          "Magus of the Moon"
+        ],
+        "extraTurns": [],
+        "combos": [
+          {
+            "name": "Godo + Helm of the Host",
+            "cards": [
+              "godo, bandit warlord",
+              "helm of the host"
+            ],
+            "kills": true,
+            "minBracket": 4,
+            "description": "Godo fetches Helm, Helm copies Godo every combat -> unbounded attack steps."
+          },
+          {
+            "name": "Kiki-Jiki + Zealous Conscripts",
+            "cards": [
+              "kiki-jiki, mirror breaker",
+              "zealous conscripts"
+            ],
+            "kills": true,
+            "minBracket": 4,
+            "description": "Copy Conscripts, untap Kiki-Jiki, repeat -> arbitrarily many hasty 3/3s."
+          }
+        ],
+        "violations": []
+      },
+      "violations": []
+    }
+  ]
+}

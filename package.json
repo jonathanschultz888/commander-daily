@@ -1,0 +1,22 @@
+{
+  "name": "commander-daily",
+  "version": "0.1.0",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "node --test tests/",
+    "start": "node src/server/server.js",
+    "sim": "node scripts/simall.mjs",
+    "coverage": "node scripts/coverage.mjs",
+    "fetch-cards": "node scripts/fetch-oracle.mjs",
+    "smoke": "node scripts/deploy-smoke.mjs",
+    "docker": "docker build -t commander-daily ."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Daily Commander challenge - a Wordle-style MTG EDH puzzle",
+  "type": "module"
+}

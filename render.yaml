@@ -1,0 +1,50 @@
+# Render blueprint — one free web service, with a free Upstash Redis store.
+#
+# Two things to know before editing this file:
+#
+# 1. The external store is not optional. Render's free web service has no
+#    persistent disk and wipes the local filesystem on every spin-down, restart
+#    and deploy. Without an external store, every player's in-progress daily
+#    (and the whole leaderboard) is erased whenever the service goes to sleep.
+#
+# 2. It has to be Upstash, NOT Render's own free Key Value.
+#      - Render's Free Key Value is in-memory only. Their docs: "whenever an
+#        instance restarts, all of its data is lost", and Render may restart one
+#        at any time. That is precisely the failure this store exists to avoid.
+#        (Paid Key Value instances do persist; the free one does not.)
+#      - Its connection string is redis://red-xxxx:6379 — a TCP Redis URL. This
+#        app's store backend speaks Upstash's HTTPS REST API, and the Blueprint
+#        spec has no `password` property for Key Value, so the credentials could
+#        not be wired up anyway.
+#    Upstash's free tier (256 MB, 500K commands/month, no card) is durable.
+#
+# Deploy: push this repo to GitHub/GitLab/Bitbucket, then Render → New → Blueprint.
+# Render reads this file, then prompts for the two values marked `sync: false`.
+
+services:
+  - type: web
+    name: commander-daily
+    runtime: node
+    plan: free
+    region: ohio                # put this in the same region as your Upstash DB
+    buildCommand: npm install --no-audit --no-fund   # no dependencies, but npm needs a run
+    startCommand: node src/server/server.js
+    healthCheckPath: /healthz
+    autoDeploy: true            # ignored when deploying from a public Git URL
+    envVars:
+      - key: SESSION_SECRET
+        generateValue: true     # keeps sessions valid across restarts
+      - key: STORE_BACKEND
+        value: upstash
+      - key: NODE_VERSION
+        value: "20"
+      - key: TRUST_PROXY
+        value: "1"              # so per-IP rate limiting sees the real client
+      # Prompted in the Render dashboard when the Blueprint is created.
+      # Paste the values from the Upstash console (REST API → .env):
+      #   UPSTASH_REDIS_REST_URL   → KV_REST_API_URL
+      #   UPSTASH_REDIS_REST_TOKEN → KV_REST_API_TOKEN
+      - key: KV_REST_API_URL
+        sync: false
+      - key: KV_REST_API_TOKEN
+        sync: false

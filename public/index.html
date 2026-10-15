@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0d1117" />
+<title>Commander Daily — a daily EDH puzzle</title>
+<link rel="stylesheet" href="style.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1117'/%3E%3Cpath d='M16 5l3 8h8l-6.5 5 2.5 8-7-5-7 5 2.5-8L5 13h8z' fill='%23c9a227'/%3E%3C/svg%3E" />
+</head>
+<body class="loading">
+
+<!-- ============ HEADER ============ -->
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" class="brand-mark" aria-hidden="true"><path d="M16 3l3.2 8.6H28l-7 5.2 2.6 8.6L16 20.2 8.4 25.4 11 16.8 4 11.6h8.8z"/></svg>
+    <div class="brand-text">
+      <strong>Commander Daily</strong>
+      <span id="brandSub">one EDH puzzle a day</span>
+    </div>
+  </div>
+
+  <nav class="mode-tabs" role="tablist">
+    <button class="tab active" data-mode="daily" role="tab">Daily Challenge</button>
+    <button class="tab" data-mode="practice" role="tab">Practice</button>
+  </nav>
+
+  <div class="topbar-right">
+    <div class="reset-clock" title="Resets at 01:00 Eastern">
+      <span class="clock-label">Next puzzle in</span>
+      <span class="clock-value" id="resetClock">--:--:--</span>
+    </div>
+    <button class="icon-btn" id="btnLeaderboard" title="Leaderboard">🏆<span class="btn-text">Leaderboard</span></button>
+    <button class="icon-btn" id="btnVote" title="Vote for tomorrow's deck">🗳️<span class="btn-text">Vote</span></button>
+    <button class="icon-btn" id="btnInfo" title="Rules & engine coverage">ⓘ</button>
+  </div>
+</header>
+
+<!-- ============ LOBBY ============ -->
+<main id="lobby" class="lobby">
+  <section class="hero">
+    <div class="hero-card" id="dailyHero">
+      <div class="hero-badge">Today's puzzle · <span id="dayKey">—</span></div>
+      <h1 id="heroTitle">Loading today's matchup…</h1>
+      <p class="hero-sub" id="heroSub"></p>
+      <div class="matchup" id="matchup"></div>
+      <div class="hero-actions">
+        <button class="primary big" id="btnStartDaily">Play today's challenge</button>
+        <button class="ghost" id="btnResumeDaily" hidden>Resume run</button>
+        <button class="ghost" id="btnStartPractice">Practice (unlimited)</button>
+      </div>
+      <p class="fineprint" id="dailyFineprint"></p>
+    </div>
+
+    <aside class="lobby-side">
+      <div class="panel">
+        <h2>Today's standings</h2>
+        <div id="lobbyLeaderboard" class="mini-board"><p class="muted">No scores yet today — be the first.</p></div>
+      </div>
+      <div class="panel">
+        <h2>Vote for tomorrow</h2>
+        <p class="muted small" id="voteSub">Pick which deck the bot plays tomorrow. Most votes wins.</p>
+        <div id="voteOptions" class="vote-options"></div>
+      </div>
+    </aside>
+  </section>
+
+  <section class="grid-3">
+    <div class="panel">
+      <h2>How it works</h2>
+      <ol class="howto">
+        <li>The bot plays both decks for the opening turns, identically for everyone.</li>
+        <li>You take over one deck at a pivotal moment — same board, same hand, every player.</li>
+        <li>One scored attempt per day. Reloading resumes your run; it does not reroll it.</li>
+        <li>Points come from how you win or lose: speed, interaction, protection, and combos.</li>
+        <li>Practice is unlimited, random, and never touches the leaderboard or your streak.</li>
+      </ol>
+    </div>
+    <div class="panel">
+      <h2>Today's decks</h2>
+      <div id="deckCards" class="deck-cards"></div>
+    </div>
+    <div class="panel" id="statsPanel">
+      <h2>Engine</h2>
+      <div id="engineStats" class="stat-list"><p class="muted small">Loading…</p></div>
+    </div>
+  </section>
+
+  <footer class="site-foot">
+    <p class="muted small">
+      Unofficial fan-made puzzle. <strong>Commander Daily is not affiliated with, endorsed or sponsored by
+      Wizards of the Coast.</strong> Magic: The Gathering, Commander and their card names and rules text are
+      trademarks and copyright of Wizards of the Coast. Card data from
+      <a href="https://scryfall.com" target="_blank" rel="noopener noreferrer">Scryfall</a> under their fan-content
+      terms. Bracket definitions follow Wizards' published Commander Brackets. This site is free, non-commercial,
+      shows no ads, and stores no accounts — just an anonymous cookie for your run.
+    </p>
+    <p class="muted small" id="buildInfo"></p>
+  </footer>
+</main>
+
+<!-- ============ GAME ============ -->
+<main id="game" class="game" hidden>
+  <div class="board-wrap">
+
+    <!-- opponent -->
+    <section class="side opponent" id="oppSide">
+      <div class="side-head">
+        <div class="player-chip">
+          <span class="avatar bot">🤖</span>
+          <div>
+            <strong id="oppName">Opponent</strong>
+            <span class="muted small" id="oppDeckName"></span>
+          </div>
+        </div>
+        <div class="life-total" id="oppLife">40</div>
+      </div>
+      <div class="zone-row" id="oppHandRow"></div>
+      <div class="zone-row hand-row" id="oppLandsLabel"></div>
+      <div class="zone-row battlefield-row" id="oppBattlefield"></div>
+      <div class="zone-row pile-row" id="oppPiles"></div>
+    </section>
+
+    <!-- middle: stack, prompts -->
+    <section class="middle">
+      <div id="stackZone" class="stack-zone"></div>
+      <div id="promptBar" class="prompt-bar" hidden></div>
+    </section>
+
+    <!-- me -->
+    <section class="side me" id="mySide">
+      <div class="zone-row battlefield-row" id="myBattlefield"></div>
+      <div class="zone-row pile-row" id="myPiles"></div>
+      <div class="side-head">
+        <div class="player-chip">
+          <span class="avatar you">🙂</span>
+          <div>
+            <strong>You</strong>
+            <span class="muted small" id="myDeckName"></span>
+          </div>
+        </div>
+        <div class="life-total" id="myLife">40</div>
+      </div>
+      <div class="zone-row mana-row" id="manaRow"></div>
+      <div class="zone-row hand-row" id="myHand"></div>
+    </section>
+
+    <div class="turn-banner" id="turnBanner" hidden></div>
+    <div id="fx" class="fx-layer"></div>
+  </div>
+
+  <!-- sidebar: points + log -->
+  <aside class="sidebar" id="sidebar">
+    <button class="sidebar-handle" id="sidebarHandle" aria-label="Toggle panel">⟡</button>
+
+    <div class="panel points-panel">
+      <div class="points-head">
+        <h2>Points</h2>
+        <span class="points-mode" id="pointsMode">Daily</span>
+      </div>
+      <div class="points-total" id="pointsTotal">0</div>
+      <div class="points-bar"><div class="points-bar-fill" id="pointsBarFill"></div></div>
+      <ul class="points-list" id="pointsList"></ul>
+    </div>
+
+    <div class="panel">
+      <h2>Match</h2>
+      <div class="match-meta">
+        <div><span class="muted small">Turn</span><strong id="metaTurn">1</strong></div>
+        <div><span class="muted small">Phase</span><strong id="metaPhase">—</strong></div>
+        <div><span class="muted small">Opponent</span><strong id="metaOppPts">0</strong></div>
+      </div>
+      <div class="combo-feed" id="comboFeed"></div>
+    </div>
+
+    <div class="panel log-panel">
+      <h2>Log</h2>
+      <div class="log" id="logFeed"></div>
+    </div>
+
+    <div class="panel actions-panel">
+      <div id="actionChips" class="action-chips"></div>
+      <button class="ghost wide" id="btnPass">Pass priority ▸</button>
+      <button class="ghost wide" id="btnConcede">Concede run</button>
+    </div>
+  </aside>
+</main>
+
+<!-- ============ MODALS ============ -->
+<div class="modal-backdrop" id="modalBackdrop" hidden>
+  <div class="modal" id="modal" role="dialog" aria-modal="true">
+    <button class="modal-close" id="modalClose" aria-label="Close">×</button>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

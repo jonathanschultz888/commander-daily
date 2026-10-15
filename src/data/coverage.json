@@ -1,0 +1,511 @@
+{
+  "generated": "2026-10-15T14:58:40.637Z",
+  "decks": 10,
+  "uniqueCards": 462,
+  "counts": {
+    "scripted": 315,
+    "compiled": 70,
+    "vanilla": 34,
+    "partial": 34,
+    "unhandled": 9
+  },
+  "fullyAutomated": 419,
+  "pct": 91,
+  "topUnparsed": [
+    {
+      "phrase": "You may choose new targets for the copy.",
+      "n": 2
+    },
+    {
+      "phrase": "Search your library for a card, then shuffle and put that card on top.",
+      "n": 2
+    },
+    {
+      "phrase": "You lose 2 life.",
+      "n": 2
+    },
+    {
+      "phrase": "look at that player's hand.",
+      "n": 2
+    },
+    {
+      "phrase": "Storm (When you cast this spell, copy it for each spell cast before it this turn.",
+      "n": 2
+    },
+    {
+      "phrase": "You may choose new targets for the copies.)",
+      "n": 2
+    },
+    {
+      "phrase": "if it was kicked, return all creatures to their owners' hands except for Merfolk, Krakens, Leviathans, Octopuses, and Serpents.",
+      "n": 1
+    },
+    {
+      "phrase": "you may pay {8}.",
+      "n": 1
+    },
+    {
+      "phrase": "If you do, tap up to eight target permanents.",
+      "n": 1
+    },
+    {
+      "phrase": "Those permanents don't untap during their controllers' next untap steps.",
+      "n": 1
+    },
+    {
+      "phrase": "if you cast it from your hand, tap all nonblue creatures.",
+      "n": 1
+    },
+    {
+      "phrase": "Those creatures don't untap during their controllers' next untap steps.",
+      "n": 1
+    },
+    {
+      "phrase": "return all other nonland permanents to their owners' hands.",
+      "n": 1
+    },
+    {
+      "phrase": "reveal the top card of your library.",
+      "n": 1
+    },
+    {
+      "phrase": "You may cast it without paying its mana cost if it's a spell with lesser mana value.",
+      "n": 1
+    },
+    {
+      "phrase": "If you don't cast it, put it into your hand.",
+      "n": 1
+    },
+    {
+      "phrase": "You may play an additional land this turn.",
+      "n": 1
+    },
+    {
+      "phrase": "put a +1/+1 counter on this creature.",
+      "n": 1
+    },
+    {
+      "phrase": "Search your library for an Aura or Equipment card, reveal it, put it into your hand, then shuffle.",
+      "n": 1
+    },
+    {
+      "phrase": "this creature gains indestructible until end of turn.",
+      "n": 1
+    },
+    {
+      "phrase": "(Damage and effects that say \"destroy\" don't destroy it.)",
+      "n": 1
+    },
+    {
+      "phrase": "Put target attacking creature on the bottom of its owner's library.",
+      "n": 1
+    },
+    {
+      "phrase": "Its controller gains life equal to its toughness.",
+      "n": 1
+    },
+    {
+      "phrase": "you may pay {1}.",
+      "n": 1
+    },
+    {
+      "phrase": "If you do, draw a card.",
+      "n": 1
+    },
+    {
+      "phrase": "you may return target permanent card with mana value 3 or less from your graveyard to the battlefield.",
+      "n": 1
+    },
+    {
+      "phrase": "Copy target instant or sorcery spell.",
+      "n": 1
+    },
+    {
+      "phrase": "copy target instant or sorcery spell.",
+      "n": 1
+    },
+    {
+      "phrase": "it deals damage to each opponent equal to your devotion to red.",
+      "n": 1
+    },
+    {
+      "phrase": "(Each {R} in the mana costs of permanents you control counts toward your devotion to red.)",
+      "n": 1
+    },
+    {
+      "phrase": "It has \"Sacrifice this token: Add {C}.\" ({C} represents colorless mana.)",
+      "n": 1
+    },
+    {
+      "phrase": "(You can't cast this spell unless you have legal choices for all its targets.)",
+      "n": 1
+    },
+    {
+      "phrase": "that player exiles the top two cards of their library.",
+      "n": 1
+    },
+    {
+      "phrase": "Until end of turn, you may play those cards without paying their mana costs.",
+      "n": 1
+    },
+    {
+      "phrase": "destroy target nonblack creature that player controls.",
+      "n": 1
+    },
+    {
+      "phrase": "that player discards two cards.",
+      "n": 1
+    },
+    {
+      "phrase": "that player exiles the top card of their library.",
+      "n": 1
+    },
+    {
+      "phrase": "you may search your library for a Ninja card, reveal it, put it into your hand, then shuffle.",
+      "n": 1
+    },
+    {
+      "phrase": "you may put target creature card from that player's graveyard onto the battlefield under your control.",
+      "n": 1
+    },
+    {
+      "phrase": "You may cast a spell from among those cards without paying its mana cost.",
+      "n": 1
+    }
+  ],
+  "partial": [
+    {
+      "name": "Jeska's Will",
+      "status": "unhandled",
+      "unsupported": [
+        "Choose one.",
+        "If you control a commander as you cast this spell, you may choose both instead.",
+        "• Add {R} for each card in target opponent's hand.",
+        "• Exile the top three cards of your library.",
+        "You may play them this turn."
+      ]
+    },
+    {
+      "name": "Lorthos, the Tidemaker",
+      "status": "partial",
+      "unsupported": [
+        "you may pay {8}.",
+        "If you do, tap up to eight target permanents.",
+        "Those permanents don't untap during their controllers' next untap steps."
+      ]
+    },
+    {
+      "name": "Rashmi, Eternities Crafter",
+      "status": "partial",
+      "unsupported": [
+        "reveal the top card of your library.",
+        "You may cast it without paying its mana cost if it's a spell with lesser mana value.",
+        "If you don't cast it, put it into your hand."
+      ]
+    },
+    {
+      "name": "Ad Nauseam",
+      "status": "unhandled",
+      "unsupported": [
+        "Reveal the top card of your library and put that card into your hand.",
+        "You lose life equal to its mana value.",
+        "You may repeat this process any number of times."
+      ]
+    },
+    {
+      "name": "Thassa's Oracle",
+      "status": "partial",
+      "unsupported": [
+        "look at the top X cards of your library, where X is your devotion to blue.",
+        "Put up to one of them on top of your library and the rest on the bottom of your library in a random order.",
+        "(Each {U} in the mana costs of permanents you control counts toward your devotion to blue.)"
+      ]
+    },
+    {
+      "name": "Tainted Pact",
+      "status": "unhandled",
+      "unsupported": [
+        "Exile the top card of your library.",
+        "You may put that card into your hand unless it has the same name as another card exiled this way.",
+        "Repeat this process until you put a card into your hand or you exile two cards with the same name, whichever comes first."
+      ]
+    },
+    {
+      "name": "Demonic Consultation",
+      "status": "unhandled",
+      "unsupported": [
+        "Choose a card name.",
+        "Exile the top six cards of your library, then reveal cards from the top of your library until you reveal a card with the chosen name.",
+        "Put that card into your hand and exile all other cards revealed this way."
+      ]
+    },
+    {
+      "name": "Doomsday",
+      "status": "unhandled",
+      "unsupported": [
+        "Search your library and graveyard for five cards and exile the rest.",
+        "Put the chosen cards on top of your library in any order.",
+        "You lose half your life, rounded up."
+      ]
+    },
+    {
+      "name": "Breaching Leviathan",
+      "status": "partial",
+      "unsupported": [
+        "if you cast it from your hand, tap all nonblue creatures.",
+        "Those creatures don't untap during their controllers' next untap steps."
+      ]
+    },
+    {
+      "name": "Cathar's Companion",
+      "status": "partial",
+      "unsupported": [
+        "this creature gains indestructible until end of turn.",
+        "(Damage and effects that say \"destroy\" don't destroy it.)"
+      ]
+    },
+    {
+      "name": "Condemn",
+      "status": "unhandled",
+      "unsupported": [
+        "Put target attacking creature on the bottom of its owner's library.",
+        "Its controller gains life equal to its toughness."
+      ]
+    },
+    {
+      "name": "Mentor of the Meek",
+      "status": "partial",
+      "unsupported": [
+        "you may pay {1}.",
+        "If you do, draw a card."
+      ]
+    },
+    {
+      "name": "Reverberate",
+      "status": "unhandled",
+      "unsupported": [
+        "Copy target instant or sorcery spell.",
+        "You may choose new targets for the copy."
+      ]
+    },
+    {
+      "name": "Dualcaster Mage",
+      "status": "partial",
+      "unsupported": [
+        "copy target instant or sorcery spell.",
+        "You may choose new targets for the copy."
+      ]
+    },
+    {
+      "name": "Fanatic of Mogis",
+      "status": "partial",
+      "unsupported": [
+        "it deals damage to each opponent equal to your devotion to red.",
+        "(Each {R} in the mana costs of permanents you control counts toward your devotion to red.)"
+      ]
+    },
+    {
+      "name": "Fallen Shinobi",
+      "status": "partial",
+      "unsupported": [
+        "that player exiles the top two cards of their library.",
+        "Until end of turn, you may play those cards without paying their mana costs."
+      ]
+    },
+    {
+      "name": "Vampiric Tutor",
+      "status": "unhandled",
+      "unsupported": [
+        "Search your library for a card, then shuffle and put that card on top.",
+        "You lose 2 life."
+      ]
+    },
+    {
+      "name": "Silent-Blade Oni",
+      "status": "partial",
+      "unsupported": [
+        "look at that player's hand.",
+        "You may cast a spell from among those cards without paying its mana cost."
+      ]
+    },
+    {
+      "name": "Dokuchi Silencer",
+      "status": "partial",
+      "unsupported": [
+        "you may discard a creature card.",
+        "When you do, destroy target creature or planeswalker that player controls."
+      ]
+    },
+    {
+      "name": "Imperial Seal",
+      "status": "unhandled",
+      "unsupported": [
+        "Search your library for a card, then shuffle and put that card on top.",
+        "You lose 2 life."
+      ]
+    },
+    {
+      "name": "Brain Freeze",
+      "status": "partial",
+      "unsupported": [
+        "Storm (When you cast this spell, copy it for each spell cast before it this turn.",
+        "You may choose new targets for the copies.)"
+      ]
+    },
+    {
+      "name": "Tendrils of Agony",
+      "status": "partial",
+      "unsupported": [
+        "Storm (When you cast this spell, copy it for each spell cast before it this turn.",
+        "You may choose new targets for the copies.)"
+      ]
+    },
+    {
+      "name": "Slinn Voda, the Rising Deep",
+      "status": "partial",
+      "unsupported": [
+        "if it was kicked, return all creatures to their owners' hands except for Merfolk, Krakens, Leviathans, Octopuses, and Serpents."
+      ]
+    },
+    {
+      "name": "Kederekt Leviathan",
+      "status": "partial",
+      "unsupported": [
+        "return all other nonland permanents to their owners' hands."
+      ]
+    },
+    {
+      "name": "Urban Evolution",
+      "status": "partial",
+      "unsupported": [
+        "You may play an additional land this turn."
+      ]
+    },
+    {
+      "name": "Ajani's Pridemate",
+      "status": "partial",
+      "unsupported": [
+        "put a +1/+1 counter on this creature."
+      ]
+    },
+    {
+      "name": "Open the Armory",
+      "status": "partial",
+      "unsupported": [
+        "Search your library for an Aura or Equipment card, reveal it, put it into your hand, then shuffle."
+      ]
+    },
+    {
+      "name": "Sun Titan",
+      "status": "partial",
+      "unsupported": [
+        "you may return target permanent card with mana value 3 or less from your graveyard to the battlefield."
+      ]
+    },
+    {
+      "name": "Sifter of Skulls",
+      "status": "partial",
+      "unsupported": [
+        "It has \"Sacrifice this token: Add {C}.\" ({C} represents colorless mana.)"
+      ]
+    },
+    {
+      "name": "Decimate",
+      "status": "partial",
+      "unsupported": [
+        "(You can't cast this spell unless you have legal choices for all its targets.)"
+      ]
+    },
+    {
+      "name": "Throat Slitter",
+      "status": "partial",
+      "unsupported": [
+        "destroy target nonblack creature that player controls."
+      ]
+    },
+    {
+      "name": "Okiba-Gang Shinobi",
+      "status": "partial",
+      "unsupported": [
+        "that player discards two cards."
+      ]
+    },
+    {
+      "name": "Nightveil Specter",
+      "status": "partial",
+      "unsupported": [
+        "that player exiles the top card of their library."
+      ]
+    },
+    {
+      "name": "Higure, the Still Wind",
+      "status": "partial",
+      "unsupported": [
+        "you may search your library for a Ninja card, reveal it, put it into your hand, then shuffle."
+      ]
+    },
+    {
+      "name": "Ink-Eyes, Servant of Oni",
+      "status": "partial",
+      "unsupported": [
+        "you may put target creature card from that player's graveyard onto the battlefield under your control."
+      ]
+    },
+    {
+      "name": "Mistblade Shinobi",
+      "status": "partial",
+      "unsupported": [
+        "you may return target creature that player controls to its owner's hand."
+      ]
+    },
+    {
+      "name": "Walker of Secret Ways",
+      "status": "partial",
+      "unsupported": [
+        "look at that player's hand."
+      ]
+    },
+    {
+      "name": "Boros Reckoner",
+      "status": "partial",
+      "unsupported": [
+        "it deals that much damage to any target."
+      ]
+    },
+    {
+      "name": "Marshal's Anthem",
+      "status": "partial",
+      "unsupported": [
+        "return up to X target creature cards from your graveyard to the battlefield, where X is the number of times this enchantment was kicked."
+      ]
+    },
+    {
+      "name": "Mystical Tutor",
+      "status": "partial",
+      "unsupported": [
+        "Search your library for an instant or sorcery card, reveal it, then shuffle and put that card on top."
+      ]
+    },
+    {
+      "name": "Cabal Ritual",
+      "status": "partial",
+      "unsupported": [
+        "Threshold — Add {B}{B}{B}{B}{B} instead if there are seven or more cards in your graveyard."
+      ]
+    },
+    {
+      "name": "Dark Petition",
+      "status": "partial",
+      "unsupported": [
+        "Spell mastery — If there are two or more instant and/or sorcery cards in your graveyard, add {B}{B}{B}."
+      ]
+    },
+    {
+      "name": "Goblin Recruiter",
+      "status": "partial",
+      "unsupported": [
+        "search your library for any number of Goblin cards, reveal them, then shuffle and put those cards on top in any order."
+      ]
+    }
+  ]
+}
