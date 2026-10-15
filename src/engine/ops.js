@@ -293,6 +293,16 @@ export function sacrifice(g, perm, ctx = {}) {
 export function bounce(g, perm, ctx = {}) {
   const owner = g.players[perm.owner];
   removeFromBattlefield(g, perm);
+  if (perm.isCommander) {
+    // CR 903.9: a commander that would go to its owner's hand may go to the
+    // command zone instead. The engine takes that option automatically (as it
+    // already does on death) — a commander stranded in hand or in a library
+    // would lose its designation, and with it the player's colour identity.
+    perm.zone = 'command';
+    owner.zones.command.push(perm);
+    g.emit({ type: 'zoneChange', card: perm.iid, from: 'battlefield', to: 'command', ctx });
+    return;
+  }
   perm.zone = 'hand';
   owner.zones.hand.push(perm);
   g.emit({ type: 'zoneChange', card: perm.iid, from: 'battlefield', to: 'hand', ctx });

@@ -36,19 +36,52 @@ There are **zero npm dependencies**, so there is nothing to install and no build
 Render's free web service has no disk: it wipes its filesystem on every spin-down, restart and redeploy. So the game state lives in Upstash instead.
 
 1. Go to **[upstash.com](https://upstash.com)** → *Sign up* (Google/GitHub/email — no card).
-2. **Create Database** → **Redis**.
-   - Name: `commander-daily`
-   - Region: pick the one near your Render region (e.g. `us-east-1` ↔ Render **Ohio/Virginia**; `eu-central-1` ↔ Render **Frankfurt**)
-   - Leave TLS, eviction, everything else at defaults → **Create**.
-3. Open the database → **REST API** tab (sometimes labelled `.env`) → copy the two values:
-   - `UPSTASH_REDIS_REST_URL` → goes into Render as **`KV_REST_API_URL`**
-   - `UPSTASH_REDIS_REST_TOKEN` → goes into Render as **`KV_REST_API_TOKEN`**
+2. **Create Database** → make sure the type is **Redis** (not Kafka, QStash or Vector — only Redis has the REST API this app uses). Name it `commander-daily`, pick the region near your Render region (e.g. `us-east-1` ↔ Render **Ohio/Virginia**; `eu-central-1` ↔ Render **Frankfurt**), leave everything else at default → **Create**.
+3. Now find the two values. **There is no username.** If a screen asks for a username, you're looking at the wrong credentials — see the box below.
 
-> The names differ because the app accepts both Upstash's and Vercel KV's naming. Same values, different label. Treat the token as a password — it can read and write the whole store.
+### Where the two values are
+
+Open the database and try these, in order — Upstash has moved these labels around:
+
+| Where | What you'll see |
+|---|---|
+| The database page itself, lower down | A **REST API** section with `Endpoint` and `Token` fields. Hover each → a copy button appears. |
+| **Connect** button, top-right of the database page | Tabs: `Node`, `Python`, **`REST`**, `.env`. Pick **REST** → `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`. The **`.env`** tab has both in paste-ready form. |
+| **Details** tab → **REST API** → **`.env`** | The same two lines. |
+
+Copy:
+
+- the **Endpoint / REST URL** — it looks like `https://us1-merry-cat-32748.upstash.io`
+- the **Token** — a long string, roughly 40+ characters
+
+That's it. Two values, no username, no port, no password.
+
+> **"But it's asking me for a username."** Upstash has *two* ways to connect, and the console shows both. The **TCP / Redis-protocol** view (the `redis-cli` or "Redis client" tab) gives a connection string like `rediss://default:PASSWORD@host:6379` — there the username is literally `default` and the password is a *different* secret. This app doesn't use TCP at all; it talks to the **REST** endpoint over HTTPS. So ignore that panel: no username, no password, no port. If what you copied starts with `redis://` or `rediss://`, or contains a `:6379`, it's the wrong one.
+
+> **Check the "Read-Only Token" switch is OFF** before copying. With it on, you get a token that can read but not write — reads pass, then every save fails and the daily silently breaks. The verifier below catches exactly this.
+
+### Verify the credentials *before* Render
+
+One command, against the real database, no deploy involved:
+
+```bash
+node scripts/check-kv.mjs https://us1-merry-cat-32748.upstash.io <your-token>
+```
+
+It does a `PING`, then writes, reads back and deletes a throwaway key, and it names the fix when something's wrong:
+
+```
+  ✓ endpoint reachable and the token authenticates
+  ✓ the token can write (SET succeeded)
+  ✓ it can read back what it wrote (GET succeeded)
+  ✓ cleaned up the test key
+```
+
+If it says `WRONGPASS`, the token is mistyped, truncated, or the read-only one. If it says the URL is a TCP one, you copied from the wrong panel. Getting a green here means anything that breaks later is a Render configuration problem, not a credential problem — which is a much better place to be debugging from.
 
 **Free tier:** 256 MB, 500,000 commands/month, no card. Every write here is one `SET` of a debounced snapshot, so a few hundred daily players costs a few thousand commands a month. You will not get close.
 
----
+> **Don't want to sign up yet?** `node scripts/fake-kv.mjs` runs a local stand-in of the same protocol, so you can rehearse the whole deployment path — including `npm run smoke` — on your own machine first.
 
 ## Step 2 — Get the code into Git
 
@@ -131,6 +164,7 @@ This is the step that most often "doesn't connect". Render doesn't get blanket a
 3. It prompts you for the two values marked `sync: false` — paste the Upstash pair from Step 1:
    - `KV_REST_API_URL` = `UPSTASH_REDIS_REST_URL`
    - `KV_REST_API_TOKEN` = `UPSTASH_REDIS_REST_TOKEN`
+   (Or paste them under their own Upstash names, `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` — the app reads either pair.)
    `SESSION_SECRET` is generated for you; `STORE_BACKEND=upstash` and `TRUST_PROXY=1` come from the file.
 4. **Apply**. First deploy takes about a minute. Your URL appears at the top of the service page.
 
@@ -150,6 +184,7 @@ Under **Environment**, add:
 
 ```
 SESSION_SECRET     <openssl rand -hex 32>   # or any long random string
+ADMIN_TOKEN        <any long random string> # optional: enables deck moderation
 STORE_BACKEND      upstash
 KV_REST_API_URL    <UPSTASH_REDIS_REST_URL>
 KV_REST_API_TOKEN  <UPSTASH_REDIS_REST_TOKEN>
@@ -208,9 +243,10 @@ Phase 2 fails loudly (and tells you the filesystem was wiped) if the store isn't
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| Blank / dark page, or only a small empty box — nothing else | an author `display` rule beating the `hidden` attribute (the modal backdrop covers the whole page) | the `[hidden] { display: none !important; }` guard must be present in `public/style.css`; `tests/ui.test.mjs` enforces it |
 | Health check fails, service never goes live | wrong start command, or the app crashed | check **Logs**; locally reproduce with `node src/server/server.js` |
 | Works, then everyone's run/leaderboard disappears after idle | `STORE_BACKEND` isn't `upstash`, or the KV vars are missing | `/healthz` should say `"store":"upstash"` |
-| Everyone logged out after each deploy | `SESSION_SECRET` missing (or changed) | set it once, leave it |
+| `SESSION_SECRET` missing (or changed) | set it once, leave it |
 | One person's 429s block others behind a shared IP | `TRUST_PROXY` not set | add `TRUST_PROXY=1` |
 | `deploy-smoke phase2` says the state changed | store isn't shared between restarts | same as row 2 |
 | Push rejected / can't reach GitHub | auth or port 22 | see the Step 2A table, or use 2C.2 / 2C.3 |

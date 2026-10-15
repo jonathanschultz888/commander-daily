@@ -6,13 +6,17 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "node --test tests/",
+    "test": "node scripts/run-tests.mjs",
     "start": "node src/server/server.js",
     "sim": "node scripts/simall.mjs",
     "coverage": "node scripts/coverage.mjs",
     "fetch-cards": "node scripts/fetch-oracle.mjs",
     "smoke": "node scripts/deploy-smoke.mjs",
-    "docker": "docker build -t commander-daily ."
+    "docker": "docker build -t commander-daily .",
+    "check-kv": "node scripts/check-kv.mjs",
+    "fake-kv": "node scripts/fake-upstash.mjs",
+    "sweep": "node scripts/sweep.mjs",
+    "check-live": "node scripts/check-live.mjs"
   },
   "keywords": [],
   "author": "",

@@ -24,7 +24,14 @@ async function api(path, body, method = 'POST') {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || `request failed (${res.status})`);
+  if (!res.ok) {
+    // Rejections carry a full verification report; attach it to the error so the
+    // caller can render the reasons instead of a bare message.
+    const err = new Error(json.error || json.report?.fatal || `request failed (${res.status})`);
+    err.status = res.status;
+    err.report = json.report;
+    throw err;
+  }
   return json;
 }
 
@@ -77,6 +84,8 @@ async function boot() {
   $('#brandSub').textContent = `Bracket ${S.boot.daily.bracket} · ${S.boot.daily.botDeck.themeName}`;
   startClock(S.boot.msUntilReset);
   renderLobby();
+  renderCommunity().catch(() => {});   // the Tools tab shows it; harmless if it fails
+  showPane('daily');
   const run = S.boot.run;
   if (run && !run.finished) {
     $('#btnStartDaily').hidden = true;
@@ -308,6 +317,8 @@ function cardEl(card, { inHand = false, controller = 0, legalTarget = false } = 
 function renderHand(me) {
   const wrap = $('#myHand');
   wrap.innerHTML = '';
+  const count = $('#handCount');
+  if (count) count.textContent = `${me.hand.length} card${me.hand.length === 1 ? '' : 's'}`;
   const playable = new Map();
   for (const a of (S.pending?.type === 'priority' ? S.pending.actions : [])) {
     if (a.type === 'playLand' || a.type === 'cast') playable.set(a.iid, a);
@@ -332,14 +343,24 @@ function renderOpponentHand(opp) {
 }
 
 function renderBattlefield(p, which) {
-  const wrap = which === 'opp' ? $('#oppBattlefield') : $('#myBattlefield');
-  wrap.innerHTML = '';
-  wrap.classList.add('drop-lane');
-  wrap.dataset.lane = which;
+  // Three rows per player, so it is obvious what is what: creatures nearest the
+  // middle (the "front line", facing the opponent's creatures across the combat
+  // line), then other permanents — artifacts, enchantments, planeswalkers — and
+  // lands at the back. Both players keep the same order from their own point of
+  // view, which is how a real table is laid out.
+  const zones = which === 'opp'
+    ? { creatures: $('#oppZoneCreatures'), other: $('#oppZoneOther'), lands: $('#oppZoneLands') }
+    : { creatures: $('#myZoneCreatures'), other: $('#myZoneOther'), lands: $('#myZoneLands') };
+  for (const z of Object.values(zones)) {
+    const cards = z.querySelector('.zone-cards');
+    cards.innerHTML = '';
+    z.classList.toggle('empty', true);
+  }
   const perms = S.view.battlefield.filter((x) => x.controller === p.id);
-  const lands = perms.filter((x) => x.isLand);
-  const others = perms.filter((x) => !x.isLand);
-  for (const c of [...others, ...lands]) {
+  const bucket = (c) => (c.isLand ? 'lands' : (c.types || []).includes('Creature') ? 'creatures' : 'other');
+  const place = (c) => {
+    const zone = zones[bucket(c)];
+    zone.classList.remove('empty');
     const n = cardEl(c, { controller: p.id, legalTarget: S.targeting?.targets?.has(c.iid) });
     if (S.attackers.has(c.iid)) n.classList.add('attacker-mark');
     if (S.blocks.some((b) => b.blocker === c.iid)) n.classList.add('blocker-mark');
@@ -365,8 +386,10 @@ function renderBattlefield(p, which) {
     }
     n.title = c.oracle_text || '';
     n.addEventListener('dblclick', () => inspect(c));
-    wrap.appendChild(n);
-  }
+    zone.querySelector('.zone-cards').appendChild(n);
+  };
+  // creatures first (front), then the rest, then lands — order within a zone stays stable
+  for (const c of perms) place(c);
 }
 
 function renderPiles(p, which) {
@@ -451,6 +474,15 @@ function renderActions() {
 }
 
 function renderPromptBar() {
+  // The server no longer offers a priority window with no legal action, but the
+  // client stays defensive: a prompt with nothing but "pass" is noise, so it is
+  // not rendered at all.
+  if (S.pending?.type === 'priority' && !(S.pending.actions || []).some((a) => a.type !== 'pass')) {
+    const bar = $('#promptBar');
+    bar.hidden = true;
+    bar.innerHTML = '';
+    return;
+  }
   const bar = $('#promptBar');
   const p = S.pending;
   if (!p || p.type === 'priority') { bar.hidden = true; return; }
@@ -507,12 +539,12 @@ function onHandPointerDown(ev, node, card, action) {
       ghost.style.width = `${node.offsetWidth}px`;
       document.body.appendChild(ghost);
       node.classList.add('dragging');
-      $$('.battlefield-row').forEach((r) => r.classList.add('drop-lane'));
+      $$('.board, .hand-panel').forEach((r) => r.classList.add('drop-lane'));
     }
     if (ghost) {
       ghost.style.left = `${e.clientX}px`;
       ghost.style.top = `${e.clientY}px`;
-      $$('.battlefield-row').forEach((r) => {
+      $$('.board, .hand-panel').forEach((r) => {
         const box = r.getBoundingClientRect();
         const over = e.clientX > box.left && e.clientX < box.right && e.clientY > box.top - 30 && e.clientY < box.bottom + 30;
         r.classList.toggle('hover', over);
@@ -524,9 +556,9 @@ function onHandPointerDown(ev, node, card, action) {
     document.removeEventListener('pointerup', up);
     if (ghost) ghost.remove();
     node.classList.remove('dragging');
-    $$('.battlefield-row').forEach((r) => r.classList.remove('hover'));
+    $$('.board, .hand-panel').forEach((r) => r.classList.remove('hover'));
     if (moved) {
-      const lanes = $$('.battlefield-row').map((r) => ({ r, box: r.getBoundingClientRect() }));
+      const lanes = $$('.board').map((r) => ({ r, box: r.getBoundingClientRect() }));
       const hit = lanes.find(({ box }) => e.clientX > box.left && e.clientX < box.right && e.clientY > box.top - 30 && e.clientY < box.bottom + 30);
       if (hit && (hit.r.dataset.lane === 'my' || !hit.r.dataset.lane)) { chooseAction(action); return; }
       if (hit) { toast('That is your opponent\'s side of the table.'); return; }
@@ -700,6 +732,30 @@ function fxCombo(iids, name) {
 /* ==========================================================================
    MODALS
    ========================================================================== */
+/**
+ * Ask the player to confirm, in the page rather than with window.confirm().
+ * Native dialogs are blocked in sandboxed iframes (including the preview this
+ * site is often embedded in), where confirm() silently returns false and the
+ * button would appear to do nothing.
+ */
+function askConfirm({ title, body, ok = 'Confirm', cancel = 'Cancel' }) {
+  return new Promise((resolve) => {
+    openModal(`
+      <h1>${esc(title)}</h1>
+      <p>${esc(body)}</p>
+      <div class="name-row">
+        <button class="primary" id="askOk">${esc(ok)}</button>
+        <button class="ghost" id="askCancel">${esc(cancel)}</button>
+      </div>`);
+    const done = (answer) => { closeModal(); resolve(answer); };
+    $('#askOk').onclick = () => done(true);
+    $('#askCancel').onclick = () => done(false);
+    const backdrop = $('#modalBackdrop');
+    const once = (e) => { if (e.target === backdrop) { backdrop.removeEventListener('click', once); done(false); } };
+    backdrop.addEventListener('click', once);
+  });
+}
+
 function openModal(html) {
   $('#modalBody').innerHTML = html;
   $('#modalBackdrop').hidden = false;
@@ -822,29 +878,58 @@ function wire() {
   $('#btnStartDaily').onclick = () => startDaily().catch((e) => toast(e.message));
   $('#btnResumeDaily').onclick = () => startDaily().catch((e) => toast(e.message));
   $('#btnStartPractice').onclick = () => startPractice().catch((e) => toast(e.message));
-  $('#btnLeaderboard').onclick = () => showLeaderboard().catch((e) => toast(e.message));
-  $('#btnVote').onclick = () => { location.hash = '#vote'; openModal('<h1>Vote for tomorrow</h1><div id="modalVote" class="vote-options"></div>'); renderVoteInto('#modalVote'); };
   $('#btnInfo').onclick = () => showCoverage().catch((e) => toast(e.message));
   $('#btnPass').onclick = sendPass;
-  $('#btnConcede').onclick = () => { if (confirm('Concede this run? The result is recorded as a loss.')) sendAction({ type: 'concede' }).catch(() => toast('Conceding mid-run is not supported yet — just keep playing or close the tab.')); };
+  $('#btnConcede').onclick = async () => {
+    const sure = await askConfirm({
+      title: 'Concede this run?',
+      body: 'The result is recorded as a loss and you cannot restart today\'s attempt.',
+      ok: 'Concede', cancel: 'Keep playing',
+    });
+    if (sure) sendAction({ type: 'concede' }).catch(() => toast('Could not concede — keep playing, or close the tab.'));
+  };
   $('#modalClose').onclick = closeModal;
   $('#modalBackdrop').addEventListener('click', (e) => { if (e.target === $('#modalBackdrop')) closeModal(); });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { if ($('#modalBackdrop').hidden === false) closeModal(); else if (S.targeting) { S.targeting = null; renderGame(); } }
     if (e.key === ' ' && S.pending?.type === 'priority') { e.preventDefault(); sendPass(); }
   });
-  $$('.tab').forEach((t) => t.onclick = () => {
-    $$('.tab').forEach((x) => x.classList.remove('active'));
-    t.classList.add('active');
-    if (t.dataset.mode === 'practice') {
-      if (S.mode === 'practice' && S.view && S.view.status !== 'over') return;
-      startPractice().catch((e) => toast(e.message));
-    } else {
-      S.mode = 'daily';
-      if (S.boot.run && !S.boot.run.finished) startDaily().catch((e) => toast(e.message));
-      else { $('#game').hidden = true; $('#lobby').hidden = false; document.body.classList.remove('game-active'); }
+  // ---------- lobby tabs: Daily / Practice / Tools ----------
+  $$('.tab').forEach((t) => t.onclick = () => showPane(t.dataset.pane));
+  $('#btnLeaderboard').onclick = () => showLeaderboard().catch((e) => toast(e.message));
+
+  $('#btnBackToLobby').onclick = async () => {
+    // Leave the board and go back to the lobby, keeping the run intact on the
+    // server: reloading the page resumes it exactly where it was.
+    if (S.view && S.view.status === 'playing') {
+      const leave = await askConfirm({
+        title: 'Leave the board?',
+        body: 'Your run is saved exactly where it is — you can resume it from the lobby.',
+        ok: 'Back to the lobby', cancel: 'Keep playing',
+      });
+      if (!leave) return;
     }
-  });
+    $('#game').hidden = true;
+    $('#lobby').hidden = false;
+    document.body.classList.remove('game-active', 'no-scroll');
+    showPane(S.mode === 'practice' ? 'practice' : 'daily');
+    if (S.mode === 'daily') boot().catch(() => {});
+  };
+
+  // ---------- tools: upload a deck ----------
+  $('#btnImport').onclick = () => submitImport().catch((e) => toast(e.message));
+  $('#btnImportExample').onclick = () => {
+    $('#importText').value = EXAMPLE_LIST;
+    $('#importName').value = $('#importName').value || 'Example Teysa list';
+    toast('Example list loaded — press Verify to see the checks run.');
+  };
+  $('#importFile').onchange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    $('#importText').value = await file.text();
+    $('#importName').value = $('#importName').value || file.name.replace(/\.[a-z0-9]+$/i, '');
+  };
+
   const sb = $('#sidebar');
   $('#sidebarHandle').onclick = () => sb.classList.toggle('open');
   // swipe up on mobile to open the panel
@@ -857,6 +942,142 @@ function wire() {
     else if (dy < -70) sb.classList.remove('open');
     sy = null;
   }, { passive: true });
+}
+
+/* ==========================================================================
+   LOBBY PANES AND TOOLS
+   ========================================================================== */
+
+function showPane(name) {
+  const panes = { daily: $('#paneDaily'), practice: $('#panePractice'), tools: $('#paneTools') };
+  if (!panes[name]) name = 'daily';
+  for (const [key, node] of Object.entries(panes)) node.hidden = key !== name;
+  $$('.tab').forEach((t) => {
+    const on = t.dataset.pane === name;
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', String(on));
+  });
+  // The board is a full-screen view; picking a lobby tab means leaving it.
+  if (name !== S.mode || !S.view) {
+    $('#game').hidden = true;
+    $('#lobby').hidden = false;
+    document.body.classList.remove('game-active', 'no-scroll');
+  }
+  if (name === 'tools') renderCommunity().catch(() => {});
+}
+
+const EXAMPLE_LIST = `1 Teysa Karlov
+
+// creatures
+1 Elenda, the Dusk Rose
+1 Cruel Celebrant
+1 Zulaport Cutthroat
+1 Blood Artist
+1 Solemn Simulacrum
+1 Butcher of Malakir
+1 Requiem Angel
+1 Pawn of Ulamog
+1 Gray Merchant of Asphodel
+
+// other spells
+1 Sifter of Skulls
+1 Condemn
+1 Anguished Unmaking
+1 Generous Gift
+1 Fellwar Stone
+
+// lands
+1 Godless Shrine
+1 Isolated Chapel
+1 Command Tower
+1 Bojuka Bog
+1 Nykthos, Shrine to Nyx
+
+24 Swamp
+24 Plains`;
+
+/** Show the verification report exactly as the server wrote it. */
+function renderImportReport(report, added, httpStatus) {
+  const box = $('#importResult');
+  box.hidden = false;
+  const rows = report.checks.map((c) => `
+    <li class="${c.ok ? 'ok' : 'bad'}">
+      <span class="mark">${c.ok ? '✓' : '✗'}</span>
+      <span><strong>${esc(c.label)}</strong>${c.detail ? `<br><span class="muted small">${esc(c.detail)}</span>` : ''}</span>
+    </li>`).join('');
+  const swaps = (report.substitutions || []).length ? `
+    <h3>Swapped in automatically</h3>
+    <ul class="swap-list">${report.substitutions.map((s) => `
+      <li><span class="out">${esc(s.out)}</span> → <span class="in">${esc(s.in)}</span>
+      <br><span class="muted small">${esc(s.reason)}</span></li>`).join('')}</ul>` : '';
+  const blockers = (report.blockers || []).length ? `
+    <h3>Cards the engine cannot play completely yet</h3>
+    <ul class="swap-list">${report.blockers.map((b) => `
+      <li><strong>${esc(b.name)}</strong> <span class="pill">${esc(b.status)}</span>
+      <br><span class="muted small">${esc((b.unsupported || [])[0] || '')}</span></li>`).join('')}</ul>` : '';
+  // Say plainly when the new deck can be played, because the daily pool is
+  // frozen at the 1am ET reset: you can test it in practice right now, and it
+  // joins the shared puzzle tomorrow rather than changing today's.
+  const when = added
+    ? (added.entersDailyOn
+      ? ` Practice can play it right now; it ${added.alreadyInRotation ? 'is in' : 'joins'} the daily rotation from <strong>${esc(added.entersDailyOn)}</strong> (the 01:00 ET reset), so today's challenge stays the same for everyone.`
+      : ' Practice can play it right now.')
+    : '';
+  const head = added
+    ? `<h3 class="good">${added.alreadyInRotation ? 'Already in the community rotation' : 'Added to the community rotation'}</h3>
+       <p class="muted small">${esc(added.name)} · ${esc(added.commander)} · Bracket ${added.bracket}.${when}</p>`
+    : `<h3 class="${report.autoRepaired ? 'warn' : 'bad'}">${report.autoRepaired ? 'Verified after automatic substitutions' : 'Not added to the rotation'}</h3>`;
+
+  box.innerHTML = `
+    ${head}
+    <ul class="check-list">${rows}</ul>
+    ${swaps}
+    ${blockers}
+    <p class="muted small">Coverage: ${report.coverage ? `${report.coverage.automated}/${report.coverage.total} cards fully scripted` : '—'}
+    ${report.coverage && report.coverage.pct === 100 ? '(100% — the bar for the shared rotation)' : ''}</p>`;
+}
+
+async function submitImport() {
+  const text = $('#importText').value.trim();
+  if (!text) { toast('Paste a decklist or a Moxfield / Archidekt URL first.'); return; }
+  const btn = $('#btnImport');
+  const bracket = $('#importBracket').value;
+  btn.disabled = true;
+  btn.textContent = 'Verifying…';
+  $('#importResult').hidden = false;
+  $('#importResult').innerHTML = '<p class="muted small">Checking the list against the rules and the engine…</p>';
+  try {
+    const body = { text, name: $('#importName').value.trim() || undefined };
+    if (bracket) body.bracket = Number(bracket);
+    const res = await api('/api/import', body);
+    renderImportReport(res.report, res.added);
+    toast(res.added ? 'Verified — it is in the rotation.' : 'Checked — see the report.');
+    if (res.added) renderCommunity().catch(() => {});
+  } catch (e) {
+    // A rejected deck comes back as 422 with a full report; show it rather than
+    // a bare error, because the report is the whole point of the check.
+    if (e.report) renderImportReport(e.report, null);
+    else $('#importResult').innerHTML = `<h3 class="bad">Import failed</h3><p class="muted small">${esc(e.message)}</p>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Verify & add to the rotation';
+  }
+}
+
+async function renderCommunity() {
+  const box = $('#communityList');
+  if (!box) return;
+  const res = await api('/api/community', undefined, 'GET');
+  const decks = res.decks || [];
+  $('#communityCount').textContent = decks.length ? `· ${decks.length} verified deck${decks.length === 1 ? '' : 's'}` : '· none yet';
+  box.innerHTML = decks.length ? decks.map((d) => `
+    <div class="deck-mini">
+      <div class="deck-swatch" style="background:${d.theme}"></div>
+      <div><strong>${esc(d.name)}</strong><br>
+        <span class="muted small">${esc(d.commander)} · verified ${d.coverage ? d.coverage.automated : '?'}/${d.coverage ? d.coverage.total : '?'} cards</span></div>
+      <span class="b">B${d.bracket}</span>
+    </div>`).join('')
+    : '<p class="muted small">No community decks yet — the first verified upload appears here and joins the rotation.</p>';
 }
 
 function renderVoteInto(sel) {

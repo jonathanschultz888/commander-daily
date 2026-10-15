@@ -8,7 +8,7 @@
  * auto-passes, which is how digital clients behave and what makes a mobile game
  * playable with one hand.
  */
-import { characteristics, hasKeyword } from './cards.js';
+import { characteristics, hasKeyword, isLand } from './cards.js';
 import { damage, findPermanent, pump, grantKeyword, sacrifice, permValue } from './ops.js';
 import { makeBot, canBlock } from './bot.js';
 import { chooseTarget } from './targeting.js';
@@ -65,6 +65,34 @@ export function runEngine(game, opts = {}) {
 /* Priority                                                            */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Can this action be taken while someone else holds priority? (CR 117.1a: the
+ * active player gets priority in their own main phase; anyone may respond with
+ * an instant, a flash card, or any activated ability not restricted to sorcery
+ * timing.) Mana abilities never appear in legalActions — they are automatic.
+ */
+function isInstantSpeedAction(game, pid, a) {
+  if (a.type === 'activate') {
+    // Activated abilities are instant-speed unless the card says otherwise; none
+    // of the pool's abilities carry a sorcery-timing restriction.
+    return true;
+  }
+  if (a.type !== 'cast') return false;
+  const card = findCardInZones(game, pid, a.iid);
+  if (!card) return false;
+  return card.types.includes('Instant') || card.keywords.has('Flash') || card.types.includes('Flash');
+}
+
+/** Say once per step why the game moved on without asking anything. */
+function noteNoPlay(game, stepName) {
+  const log = game.autoPassLog || (game.autoPassLog = {});
+  const key = `${game.turn}:${stepName}`;
+  if (log[key]) return;
+  log[key] = true;
+  const nice = { main1: 'your first main phase', main2: 'your second main phase', upkeep: 'your upkeep', draw: 'your draw step', combat: 'your combat step', declareAttackers: 'your attack step' }[stepName] || `your ${stepName} step`;
+  game.log(`Nothing you can legally do in ${nice} — skipped.`);
+}
+
 function priorityWindow(game, bot, options) {
   const st = game.priorityState || (game.priorityState = { passed: [] });
   if (!Array.isArray(st.passed)) st.passed = [];
@@ -80,20 +108,28 @@ function priorityWindow(game, bot, options) {
     const alreadyPassed = st.passed.includes(pid);
     const actions = game.legalActions(pid);
 
-    // Give the human a window only when they can meaningfully act and haven't passed
+    // Give the human a window only when they can meaningfully act and haven't passed.
+    // `pass` is *always* legal, so it must never count as a reason to stop: a prompt
+    // whose only button is "pass priority" is not a decision, it is a delay. The
+    // rules check is therefore "does this player hold a legal action at all" first,
+    // and only then "is this a moment where such an action is worth offering".
+    const meaningful = actions.filter((a) => a.type !== 'pass');
     if (humanSeat && options.stopForHuman && !alreadyPassed) {
       const opponentActing = game.stack.some((s) => s.controller !== game.humanId);
-      const hasInstantSpeed = actions.some((a) => {
-        const card = findCardInZones(game, pid, a.iid);
-        if (!card) return true;
-        return card.types.includes('Instant') || card.keywords.has('Flash') || a.type === 'activate';
-      });
-      const shouldStop = isHumanTurnPhase() || opponentActing || (game.stack.length && hasInstantSpeed)
-        || actions.some((a) => a.type === 'playLand');
+      const canRespond = meaningful.some((a) => isInstantSpeedAction(game, pid, a));
+      const shouldStop = meaningful.length > 0 && (
+        isHumanTurnPhase()                             // their own main phase: land drop, cast, activate
+        || (game.stack.length > 0 && canRespond)       // something on the stack they could answer
+        || (opponentActing && canRespond)              // opponent is acting and they can react
+      );
       if (shouldStop) {
         game.pending = { type: 'priority', player: pid, actions };
         return 'awaiting';
       }
+      // Nothing legal for them here: skip the window entirely (no prompt, no
+      // validation) and say so on their own turn so a quiet turn doesn't read
+      // as a bug. Once per step — the log is not a turn-by-turn transcript.
+      if (game.activePlayer === game.humanId) noteNoPlay(game, game.step);
     }
 
     // Bot (or the human seat during the scripted opening) acts
@@ -169,42 +205,115 @@ export function playOpening(game, { graceTurns = 8 } = {}) {
   return game;
 }
 
-export function executeAction(game, bot, pid, action) {
-  const card = findCardInZones(game, pid, action.iid);
-  if (!card) return false;
-  if (action.type === 'playLand' || (action.type === 'cast' && card.types.includes('Land'))) {
-    const res = game.cast(pid, card);
-    return !!res.ok;
-  }
-  if (action.type === 'cast') {
-    const withTargets = bot.withTargets(game, pid, action, card);
-    if (!withTargets) return false;
-    const res = game.cast(pid, card, { targets: withTargets.targets, x: pickX(game, card, pid) });
-    return !!res.ok;
-  }
-  if (action.type === 'activate') {
-    const perm = game.battlefield.find((p) => p.iid === action.iid);
-    if (!perm) return false;
-    const script = cardScript(perm);
-    const ability = script.abilities[action.index];
-    if (!ability) return false;
-    const targets = [];
-    if (ability.equip !== undefined) {
-      const creature = bestEquipTarget(game, pid, perm);
-      if (!creature) return false;
-      targets.push(creature.iid);
-    } else if (ability.target) {
-      const spec = ability.target === 'creatureYouControl' ? { kind: 'permanent', filter: { creature: true, controller: 'you' } }
-        : ability.target === 'creature' ? { kind: 'permanent', filter: { creature: true } }
-        : { kind: 'permanent', filter: {} };
-      const t = chooseTarget(game, { source: perm, controller: pid }, spec, { mode: 'value' });
-      if (t === null) return false;
-      targets.push(t);
+/**
+ * The one place a player action is applied to the game — the HTTP handler and
+ * anything driving a seat (a bot standing in for the player, a test, the
+ * sweep) all come through here, so no path can quietly support fewer actions
+ * than another.
+ *
+ * Pass `bot` to have legal targets and X chosen automatically, which is what a
+ * seat under bot control needs; leave it out and the caller must supply targets,
+ * which is what a real player does.
+ */
+export function applyPlayerAction(game, pid, action, { bot = null } = {}) {
+  if (!action || typeof action !== 'object') return { error: 'missing action' };
+  if (game.status === 'over') return { error: 'game is over' };
+
+  switch (action.type) {
+    case 'pass': {
+      // Real priority pass (CR 117.3d): record it so the driver can end the step
+      // once both players have passed.
+      game.pending = null;
+      game.priorityState = game.priorityState || { passed: [] };
+      if (!game.priorityState.passed.includes(pid)) game.priorityState.passed.push(pid);
+      game.priority = game.other(pid);
+      return { ok: true };
     }
-    const res = game.activate(pid, perm, ability, { targets, x: pickX(game, card, pid) });
-    return !!res.ok;
+    case 'concede': {
+      game.pending = null;
+      game.finish(game.other(pid), { reason: 'conceded' });
+      return { ok: true };
+    }
+    case 'playLand':
+    case 'cast': {
+      const card = [...game.players[pid].zones.hand, ...game.players[pid].zones.command].find((c) => c.iid === action.iid);
+      if (!card) return { error: 'card not in hand' };
+      if (isLand(card) && action.type === 'cast') return { error: 'lands are played, not cast' };
+      let targets = (action.targets || []).map((t) => resolveTargetRef(game, t));
+      let x = action.x || 0;
+      // Auto-targeting is for spells. A land is played, not cast, and never has
+      // targets to choose — asking the bot for them can fail on a land whose
+      // script carries an activated ability with a target.
+      if (bot && !targets.length && action.type === 'cast') {
+        const filled = bot.withTargets(game, pid, action, card);
+        if (!filled) return { error: 'no legal target' };
+        targets = filled.targets || [];
+        x = pickX(game, card, pid);
+      }
+      const res = game.cast(pid, card, { targets, x, mode: action.mode });
+      if (!res.ok) return { error: res.reason || 'illegal cast' };
+      game.pending = null;
+      return { ok: true };
+    }
+    case 'activate': {
+      const perm = game.battlefield.find((p) => p.iid === action.iid);
+      if (!perm) return { error: 'permanent not found' };
+      const script = cardScript(perm);
+      const ability = script.abilities[action.index];
+      if (!ability) return { error: 'no such ability' };
+      let targets = (action.targets || []).map((t) => resolveTargetRef(game, t));
+      let x = action.x || 0;
+      if (bot && !targets.length) {
+        x = pickX(game, perm, pid);
+        if (ability.equip !== undefined) {
+          const creature = bestEquipTarget(game, pid, perm);
+          if (!creature) return { error: 'no creature to equip' };
+          targets.push(creature.iid);
+        } else if (ability.target) {
+          const spec = ability.target === 'creatureYouControl' ? { kind: 'permanent', filter: { creature: true, controller: 'you' } }
+            : ability.target === 'creature' ? { kind: 'permanent', filter: { creature: true } }
+            : { kind: 'permanent', filter: {} };
+          const t = chooseTarget(game, { source: perm, controller: pid }, spec, { mode: 'value' });
+          if (t === null) return { error: 'no legal target' };
+          targets.push(t);
+        }
+        x = pickX(game, perm, pid);
+      }
+      const res = game.activate(pid, perm, ability, { targets, x });
+      if (!res.ok) return { error: res.reason || 'illegal activation' };
+      game.pending = null;
+      return { ok: true };
+    }
+    case 'attackers': {
+      if (game.pending?.type !== 'declareAttackers') return { error: 'not choosing attackers' };
+      const legal = new Set(game.pending.legal);
+      const chosen = (action.iids || []).filter((i) => legal.has(i));
+      applyAttackers(game, chosen);
+      return { ok: true };
+    }
+    case 'blockers': {
+      if (game.pending?.type !== 'declareBlockers') return { error: 'not choosing blockers' };
+      const legal = game.pending.legal || {};
+      const pairs = (action.pairs || []).filter((pr) => (legal[pr.blocker] || []).includes(pr.attacker));
+      applyBlockers(game, pairs);
+      return { ok: true };
+    }
+    default:
+      return { error: `unknown action ${action.type}` };
   }
-  return false;
+}
+
+/** Apply a target reference as sent over HTTP: a number, "player:1", or an iid. */
+export function resolveTargetRef(game, ref) {
+  if (typeof ref === 'number') return ref;
+  if (typeof ref === 'string' && ref.startsWith('player:')) return Number(ref.split(':')[1]);
+  if (typeof ref === 'string') return game.battlefield.find((p) => p.iid === ref) || ref;
+  return ref;
+}
+
+/** Bot convenience wrapper: apply an action, auto-choosing targets and X. */
+export function executeAction(game, bot, pid, action) {
+  return !!applyPlayerAction(game, pid, action, { bot }).ok;
 }
 
 function pickX(game, card, pid) {
@@ -289,8 +398,13 @@ function declareBlockers(game, bot, options) {
   const defender = game.other(game.activePlayer);
   const humanSeat = defender === game.humanId && !game.humanIsBot;
   const legalBlockers = game.creaturesControlledBy(defender).filter((c) => !c.tapped);
+  // An untapped creature is not enough: it must be able to block *something*
+  // (a ground creature cannot block a flier, and menace needs two). If nothing
+  // can block, there is no decision to make, so no prompt is shown and the
+  // empty block resolves through the bot path below.
+  const canBlockAnything = legalBlockers.some((b) => attackers.some((a) => canBlock(game, b, a)));
 
-  if (humanSeat && options.stopForHuman) {
+  if (humanSeat && options.stopForHuman && canBlockAnything) {
     const optionsMap = {};
     for (const b of legalBlockers) {
       optionsMap[b.iid] = attackers.filter((a) => canBlock(game, b, a)).map((a) => a.iid);
@@ -307,7 +421,7 @@ function declareBlockers(game, bot, options) {
   }
   game.blocksDeclared = true;
   game.blocks = bot.declareBlocks(game, defender, attackers.map((a) => a.iid));
-  game.log(`${game.players[defender].name} blocks ${game.blocks.length} attacker(s)`);
+  if (game.blocks.length) game.log(`${game.players[defender].name} blocks ${game.blocks.length} attacker(s)`);
   return 'done';
 }
 

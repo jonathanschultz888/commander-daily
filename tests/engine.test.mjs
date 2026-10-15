@@ -12,7 +12,8 @@ import { loadAllDecks, profileDeck, COMBO_REGISTRY, GAME_CHANGERS } from '../src
 import * as store from '../src/server/store.js';
 import { SEED_DECKS } from '../src/decks/lists.js';
 import { createGame, reviveGame, packGame } from '../src/engine/game.js';
-import { runEngine, combatDamage, executeAction, playOpening } from '../src/engine/driver.js';
+import { bounce } from '../src/engine/ops.js';
+import { runEngine, combatDamage, executeAction, playOpening, applyPlayerAction } from '../src/engine/driver.js';
 import { makeBot } from '../src/engine/bot.js';
 import { makeCardInstance, characteristics, makeTokenInstance } from '../src/engine/cards.js';
 import { cardScript } from '../src/engine/scripts.js';
@@ -545,4 +546,143 @@ test("the day's game does not depend on what the process did first", () => {
   const withScan = run(true);
   assert.equal(withScan, without, "scanning the pool first changed the day's game");
   assert.ok(JSON.parse(without).prompt >= 2, 'the takeover turn still offers a decision');
+});
+
+test('the player is never asked to pass priority with nothing legal to do', () => {
+  // The complaint this encodes: a prompt whose only option is "pass priority" is
+  // a delay, not a decision. Sweep real days, play the human's seat forward, and
+  // require every priority window offered to contain at least one legal action
+  // besides passing — including the combat windows, where an unblockable attack
+  // used to stop the game to ask a question with no answer.
+  const days = ['2026-10-15', '2026-10-16', '2026-10-17', '2026-08-06', '2026-09-01'];
+  let prompts = 0;
+  for (const day of days) {
+    const setup = dailySetup(day);
+    let game = createGame({ decks: setup.decks, seed: setup.seed, options: { humanIsBot: true } });
+    game.bot = makeBot(setup.decks[1].prototype);
+    game.takeoverAt = (setup.openingTurns || 3) + 1;
+    playOpening(game);
+
+    let guard = 0;
+    while (game.status === 'playing' && guard++ < 300) {
+      const pending = game.pending;
+      if (!pending) break;
+      if (pending.type === 'priority') {
+        prompts++;
+        const real = pending.actions.filter((a) => a.type !== 'pass');
+        assert.ok(real.length >= 1, `${day} turn ${game.turn} ${pending.type} in ${game.step}: offered a prompt with no legal action`);
+      }
+      if (pending.type === 'declareBlockers') {
+        const anyPair = Object.values(pending.legal || {}).some((l) => l.length);
+        assert.ok(anyPair || pending.blockers.length === 0,
+          `${day}: the player was asked to block with no legal blocker`);
+      }
+      const action = pending.type === 'priority'
+        ? (pending.actions.find((a) => a.type !== 'pass') || pending.actions[0])
+        : pending.type === 'declareAttackers' ? { type: 'attackers', iids: pending.suggested || [] }
+          : { type: 'blockers', pairs: pending.suggested || [] };
+      if (!action) break;
+      game = reviveGame(JSON.parse(JSON.stringify(packGame(game))));
+      executeAction(game, game.bot, game.humanId, action);
+      runEngine(game, { stopForHuman: true });
+    }
+  }
+  assert.ok(prompts > 50, `the sweep should exercise plenty of windows (saw ${prompts})`);
+});
+
+test('a step the player cannot act in is skipped, and the log says so', () => {
+  // The player sits in the seat for real here (humanIsBot false), with an empty
+  // hand and nothing untapped, so their main phase is genuinely empty. The
+  // engine must move on without stopping, and say why on the next such step.
+  const setup = dailySetup('2026-10-15');
+  const game = createGame({ decks: setup.decks, seed: setup.seed, options: { humanIsBot: false } });
+  game.bot = makeBot(setup.decks[1].prototype);
+  playOpening(game);
+  const me = game.humanId;
+  assert.equal(game.humanIsBot, false, "the seat is the player's after the opening");
+
+  let prompts = 0;
+  let skipped = '';
+  for (let i = 0; i < 60 && game.status !== 'over' && !skipped; i++) {
+    // Their turn, with nothing playable in hand.
+    game.players[me].zones.hand.length = 0;
+    game.players[me].zones.command.length = 0;
+    const pending = game.pending;
+    if (pending) {
+      if (pending.type === 'priority') {
+        prompts++;
+        assert.ok((pending.actions || []).some((a) => a.type !== 'pass'),
+          'a priority prompt was offered with nothing but "pass" available');
+        applyPlayerAction(game, me, { type: 'pass' });
+      } else if (pending.type === 'declareAttackers') {
+        applyPlayerAction(game, me, { type: 'attackers', iids: [] });
+      } else if (pending.type === 'declareBlockers') {
+        applyPlayerAction(game, me, { type: 'blockers', pairs: [] });
+      }
+    }
+    runEngine(game, { stopForHuman: true });
+    skipped = (game.logLines.find((l) => /Nothing you can legally do/.test(l.text || l)) || {}).text || '';
+  }
+  assert.ok(skipped, 'the engine explains an auto-skipped step instead of leaving the player guessing');
+  assert.ok(game.autoPassLog && Object.keys(game.autoPassLog).length >= 1, 'and it records that it did so, once per step');
+  assert.ok(game.turn > 1, 'the game kept moving');
+});
+
+test('a commander keeps its identity wherever an effect moves it', () => {
+  // 2026-01-17 exposed this: a bounce effect returned the commander to its
+  // owner's hand, which erased the player's colour identity and left the whole
+  // deck unplayable — the game simply stopped offering legal actions.
+  const setup = dailySetup('2026-01-17');
+  const game = createGame({ decks: setup.decks, seed: setup.seed, options: { humanIsBot: true, noScoring: true } });
+  const me = game.humanId;
+  const cmd = game.players[me].zones.command.find((c) => c.isCommander);
+  assert.ok(cmd, 'the deck starts with its commander in the command zone');
+  assert.equal(game.commanderOf(me).name, cmd.name, 'and the commander is known');
+
+  // Put it on the battlefield from wherever it is, then bounce it.
+  for (const z of ['command', 'hand', 'graveyard', 'exile', 'library']) {
+    const arr = game.players[me].zones[z];
+    const i = arr.indexOf(cmd);
+    if (i >= 0) arr.splice(i, 1);
+  }
+  const onField = game.battlefield.indexOf(cmd);
+  if (onField >= 0) game.battlefield.splice(onField, 1);
+  putPermanent(game, cmd, me, {});
+  assert.ok(game.battlefield.includes(cmd), 'it can be on the battlefield');
+  bounce(game, cmd, {});
+  assert.equal(cmd.zone, 'command', 'a bounced commander returns to the command zone (CR 903.9), not to hand');
+  assert.equal(game.commanderOf(me).name, cmd.name, 'and it is still recognised as the commander');
+
+  // Worst case: an effect strands it somewhere unusual. Identity must survive,
+  // so the deck keeps working instead of silently refusing every coloured card.
+  game.players[me].zones.command.length = 0;
+  cmd.zone = 'hand';
+  game.players[me].zones.hand.push(cmd);
+  assert.equal(game.commanderOf(me)?.name, cmd.name, 'identity is still known from the hand');
+
+  const identity = new Set(game.commanderOf(me).card.color_identity);
+  const inColour = game.players[me].zones.hand.find((c) => (c.card.color_identity || []).length
+    && c.card.color_identity.every((x) => identity.has(x)));
+  assert.ok(inColour, 'the hand has a coloured card to check with');
+  const res = game.canCast(me, inColour);
+  assert.ok(!/colour identity/.test(res.reason || ''),
+    `an in-colour card must not be refused for identity reasons (got: ${res.reason})`);
+});
+
+test('no commander is ever left in a hand or a library', () => {
+  // The invariant the fix above protects: a commander in hand or library loses
+  // its designation for anything that looks at zones, so it must not happen.
+  for (const day of ['2026-01-17', '2026-01-20', '2026-01-21', '2026-10-15']) {
+    const setup = dailySetup(day);
+    const game = createGame({ decks: setup.decks, seed: setup.seed, options: { humanIsBot: true } });
+    game.bot = makeBot(setup.decks[1].prototype);
+    runEngine(game, { stopForHuman: false, maxIterations: 30000 });
+    for (const pl of game.players) {
+      assert.equal(pl.zones.hand.filter((c) => c.isCommander).length, 0, `${day}: a commander is in hand`);
+      assert.equal(pl.zones.library.filter((c) => c.isCommander).length, 0, `${day}: a commander is in the library`);
+    }
+    for (const pl of game.players) {
+      assert.ok(game.commanderOf(pl.id) || pl.lost, `${day}: player ${pl.id} lost their commander designation entirely`);
+    }
+  }
 });

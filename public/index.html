@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#0d1117" />
 <title>Commander Daily — a daily EDH puzzle</title>
 <link rel="stylesheet" href="style.css" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1117'/%3E%3Cpath d='M16 5l3 8h8l-6.5 5 2.5 8-7-5-7 5 2.5-8L5 13h8z' fill='%23c9a227'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f14'/%3E%3Cpath d='M16 4l3.1 8.3H28l-6.8 5 2.5 8.3L16 20.6 8.3 25.6l2.5-8.3L4 12.3h8.9z' fill='%23c9a227'/%3E%3C/svg%3E" />
 </head>
 <body class="loading">
 
@@ -20,9 +20,10 @@
     </div>
   </div>
 
-  <nav class="mode-tabs" role="tablist">
-    <button class="tab active" data-mode="daily" role="tab">Daily Challenge</button>
-    <button class="tab" data-mode="practice" role="tab">Practice</button>
+  <nav class="mode-tabs" role="tablist" aria-label="Sections">
+    <button class="tab active" data-pane="daily" role="tab" aria-selected="true">Daily</button>
+    <button class="tab" data-pane="practice" role="tab" aria-selected="false">Practice</button>
+    <button class="tab" data-pane="tools" role="tab" aria-selected="false">Tools</button>
   </nav>
 
   <div class="topbar-right">
@@ -30,42 +31,44 @@
       <span class="clock-label">Next puzzle in</span>
       <span class="clock-value" id="resetClock">--:--:--</span>
     </div>
-    <button class="icon-btn" id="btnLeaderboard" title="Leaderboard">🏆<span class="btn-text">Leaderboard</span></button>
-    <button class="icon-btn" id="btnVote" title="Vote for tomorrow's deck">🗳️<span class="btn-text">Vote</span></button>
-    <button class="icon-btn" id="btnInfo" title="Rules & engine coverage">ⓘ</button>
+    <button class="icon-btn" id="btnBackToLobby" title="Back to the lobby">◀<span class="btn-text">Lobby</span></button>
+    <button class="icon-btn" id="btnInfo" title="Rules &amp; engine coverage">ⓘ</button>
   </div>
 </header>
 
-<!-- ============ LOBBY ============ -->
+<!-- ============ LOBBY (tabbed) ============ -->
 <main id="lobby" class="lobby">
-  <section class="hero">
-    <div class="hero-card" id="dailyHero">
-      <div class="hero-badge">Today's puzzle · <span id="dayKey">—</span></div>
-      <h1 id="heroTitle">Loading today's matchup…</h1>
-      <p class="hero-sub" id="heroSub"></p>
-      <div class="matchup" id="matchup"></div>
-      <div class="hero-actions">
-        <button class="primary big" id="btnStartDaily">Play today's challenge</button>
-        <button class="ghost" id="btnResumeDaily" hidden>Resume run</button>
-        <button class="ghost" id="btnStartPractice">Practice (unlimited)</button>
+
+  <!-- ---------------- DAILY ---------------- -->
+  <section class="lobby-pane" id="paneDaily" role="tabpanel">
+    <div class="hero">
+      <div class="hero-card" id="dailyHero">
+        <div class="hero-badge">Today's puzzle · <span id="dayKey">—</span></div>
+        <h1 id="heroTitle">Loading today's matchup…</h1>
+        <p class="hero-sub" id="heroSub"></p>
+        <div class="matchup" id="matchup"></div>
+        <div class="hero-actions">
+          <button class="primary big" id="btnStartDaily">Play today's challenge</button>
+          <button class="ghost" id="btnResumeDaily" hidden>Resume run</button>
+        </div>
+        <p class="fineprint" id="dailyFineprint"></p>
       </div>
-      <p class="fineprint" id="dailyFineprint"></p>
+
+      <aside class="lobby-side">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Today's standings</h2>
+            <button class="ghost tiny" id="btnLeaderboard">All-time</button>
+          </div>
+          <div id="lobbyLeaderboard" class="mini-board"><p class="muted">No scores yet today — be the first.</p></div>
+        </div>
+        <div class="panel">
+          <h2>Today's decks</h2>
+          <div id="deckCards" class="deck-cards"></div>
+        </div>
+      </aside>
     </div>
 
-    <aside class="lobby-side">
-      <div class="panel">
-        <h2>Today's standings</h2>
-        <div id="lobbyLeaderboard" class="mini-board"><p class="muted">No scores yet today — be the first.</p></div>
-      </div>
-      <div class="panel">
-        <h2>Vote for tomorrow</h2>
-        <p class="muted small" id="voteSub">Pick which deck the bot plays tomorrow. Most votes wins.</p>
-        <div id="voteOptions" class="vote-options"></div>
-      </div>
-    </aside>
-  </section>
-
-  <section class="grid-3">
     <div class="panel">
       <h2>How it works</h2>
       <ol class="howto">
@@ -76,13 +79,101 @@
         <li>Practice is unlimited, random, and never touches the leaderboard or your streak.</li>
       </ol>
     </div>
-    <div class="panel">
-      <h2>Today's decks</h2>
-      <div id="deckCards" class="deck-cards"></div>
+  </section>
+
+  <!-- ---------------- PRACTICE ---------------- -->
+  <section class="lobby-pane" id="panePractice" role="tabpanel" hidden>
+    <div class="hero">
+      <div class="hero-card">
+        <div class="hero-badge">Practice · unlimited</div>
+        <h1>Learn the engine risk-free.</h1>
+        <p class="hero-sub">Two random decks from a random bracket, played out the same way as the daily — bot opening, then you take over.
+          Every round is a fresh pairing: neither of today's daily decks can appear, and nothing here touches the leaderboard, your streak, or today's score.</p>
+        <div class="hero-actions">
+          <button class="primary big" id="btnStartPractice">Start a practice round</button>
+        </div>
+        <p class="fineprint">Same rules engine, same scoring feedback — just no stakes and no limit.</p>
+      </div>
+      <aside class="lobby-side">
+        <div class="panel">
+          <h2>What practice is for</h2>
+          <ol class="howto">
+            <li><strong>Learn a deck</strong> you have never piloted — combos, triggers and all.</li>
+            <li><strong>Test a line</strong> before you commit to it in a scored daily.</li>
+            <li><strong>See the scoring</strong> in action: the tracker explains every point as it lands.</li>
+          </ol>
+        </div>
+        <div class="panel">
+          <h2>Daily vs practice</h2>
+          <div class="stat-list">
+            <div class="row"><span>Attempts</span><span>unlimited</span></div>
+            <div class="row"><span>Decks</span><span>random, re-rolled each round</span></div>
+            <div class="row"><span>Uses today's decks</span><span>never</span></div>
+            <div class="row"><span>Counts for the leaderboard</span><span>no</span></div>
+          </div>
+        </div>
+      </aside>
     </div>
-    <div class="panel" id="statsPanel">
-      <h2>Engine</h2>
-      <div id="engineStats" class="stat-list"><p class="muted small">Loading…</p></div>
+  </section>
+
+  <!-- ---------------- TOOLS ---------------- -->
+  <section class="lobby-pane" id="paneTools" role="tabpanel" hidden>
+    <div class="hero">
+      <div class="hero-card">
+        <h2>Vote for tomorrow's deck</h2>
+        <p class="muted small" id="voteSub">Pick which deck the bot plays tomorrow. Most votes wins.</p>
+        <div id="voteOptions" class="vote-options"></div>
+      </div>
+      <aside class="lobby-side">
+        <div class="panel" id="statsPanel">
+          <h2>Engine</h2>
+          <div id="engineStats" class="stat-list"><p class="muted small">Loading…</p></div>
+        </div>
+      </aside>
+    </div>
+
+    <div class="panel">
+      <h2>Upload your own deck</h2>
+      <p class="muted small">
+        Paste a Moxfield or Archidekt URL, or paste the decklist itself. The deck has to pass the same checks
+        the built-in decks pass: 100 cards, legal commander, colour identity, bracket rules — and
+        <strong>every card fully scripted</strong>, so it plays completely for every player.
+        Cards the engine can't play completely are reported and swapped for equivalents automatically.
+      </p>
+      <div class="import-grid">
+        <div class="field">
+          <label for="importName">Deck name</label>
+          <input id="importName" type="text" placeholder="My deck" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="importBracket">Bracket (leave on auto to detect it)</label>
+          <select id="importBracket">
+            <option value="">Auto-detect</option>
+            <option value="1">1 · Exhibition</option>
+            <option value="2">2 · Core</option>
+            <option value="3">3 · Upgraded</option>
+            <option value="4">4 · Optimized</option>
+            <option value="5">5 · cEDH</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="importFile">…or pick a file (.txt / .dec / .csv)</label>
+          <input id="importFile" type="file" accept=".txt,.dec,.csv,text/plain" />
+        </div>
+      </div>
+      <textarea id="importText" rows="8" spellcheck="false"
+        placeholder="1 Atraxa, Praetors' Voice&#10;1 Sol Ring&#10;1 Arcane Signet&#10;10 Forest&#10;…"></textarea>
+      <div class="hero-actions">
+        <button class="primary" id="btnImport">Verify &amp; add to the rotation</button>
+        <button class="ghost" id="btnImportExample">Show an example list</button>
+      </div>
+      <div id="importResult" class="import-result" hidden></div>
+    </div>
+
+    <div class="panel">
+      <h2>Community rotation <span class="muted small" id="communityCount"></span></h2>
+      <p class="muted small">Verified uploads join the bracket they belong to and can come up in the daily or practice at any time.</p>
+      <div id="communityList" class="deck-cards"><p class="muted small">Loading…</p></div>
     </div>
   </section>
 
@@ -103,7 +194,8 @@
 <main id="game" class="game" hidden>
   <div class="board-wrap">
 
-    <!-- opponent -->
+    <!-- opponent: kept away from the centre only in their own rows, so both
+         players' creatures face each other across the combat line -->
     <section class="side opponent" id="oppSide">
       <div class="side-head">
         <div class="player-chip">
@@ -115,21 +207,47 @@
         </div>
         <div class="life-total" id="oppLife">40</div>
       </div>
-      <div class="zone-row" id="oppHandRow"></div>
-      <div class="zone-row hand-row" id="oppLandsLabel"></div>
-      <div class="zone-row battlefield-row" id="oppBattlefield"></div>
       <div class="zone-row pile-row" id="oppPiles"></div>
+      <div class="zone-row hand-row compact" id="oppHandRow"></div>
+      <div class="board" id="oppBoard">
+        <div class="zone" id="oppZoneLands">
+          <span class="zone-label">Lands</span>
+          <div class="zone-cards"></div>
+        </div>
+        <div class="zone" id="oppZoneOther">
+          <span class="zone-label">Permanents</span>
+          <div class="zone-cards"></div>
+        </div>
+        <div class="zone zone-front" id="oppZoneCreatures">
+          <span class="zone-label">Creatures <span class="zone-hint">· attacking this way</span></span>
+          <div class="zone-cards"></div>
+        </div>
+      </div>
     </section>
 
-    <!-- middle: stack, prompts -->
+    <!-- middle: the combat line, the stack and prompts -->
     <section class="middle">
+      <div class="combat-line" id="combatLine" hidden><span>front line</span></div>
       <div id="stackZone" class="stack-zone"></div>
       <div id="promptBar" class="prompt-bar" hidden></div>
     </section>
 
     <!-- me -->
     <section class="side me" id="mySide">
-      <div class="zone-row battlefield-row" id="myBattlefield"></div>
+      <div class="board" id="myBoard">
+        <div class="zone zone-front" id="myZoneCreatures">
+          <span class="zone-label">Your creatures <span class="zone-hint">· attack from here</span></span>
+          <div class="zone-cards"></div>
+        </div>
+        <div class="zone" id="myZoneOther">
+          <span class="zone-label">Your permanents</span>
+          <div class="zone-cards"></div>
+        </div>
+        <div class="zone" id="myZoneLands">
+          <span class="zone-label">Your lands</span>
+          <div class="zone-cards"></div>
+        </div>
+      </div>
       <div class="zone-row pile-row" id="myPiles"></div>
       <div class="side-head">
         <div class="player-chip">
@@ -142,7 +260,14 @@
         <div class="life-total" id="myLife">40</div>
       </div>
       <div class="zone-row mana-row" id="manaRow"></div>
-      <div class="zone-row hand-row" id="myHand"></div>
+      <div class="hand-panel" id="handPanel">
+        <div class="hand-head">
+          <span class="hand-title">Your hand</span>
+          <span class="hand-count muted small" id="handCount">0 cards</span>
+          <span class="hand-hint muted small">drag a card up to the board, or tap it</span>
+        </div>
+        <div class="zone-row hand-row" id="myHand"></div>
+      </div>
     </section>
 
     <div class="turn-banner" id="turnBanner" hidden></div>

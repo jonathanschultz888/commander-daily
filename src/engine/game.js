@@ -332,9 +332,17 @@ const gameMethods = {
   controlledBy(id) { return this.battlefield.filter((p) => p.controller === id); },
   creaturesControlledBy(id) { return this.battlefield.filter((p) => p.controller === id && characteristics(this, p).isCreature); },
   landsControlledBy(id) { return this.battlefield.filter((p) => p.controller === id && isLand(p)); },
+  /**
+   * The player's commander, wherever it currently is. Identity is a property of
+   * the commander designation, not of a zone: an effect that tucks it into a
+   * library must not be able to change what the deck is allowed to play
+   * (CR 903.4), or every coloured card in the deck stops working.
+   */
   commanderOf(id) {
     const pl = this.players[id];
-    return [...pl.zones.command, ...this.battlefield].find((c) => c.isCommander && c.owner === id) || null;
+    return [...pl.zones.command, ...this.battlefield,
+      ...pl.zones.hand, ...pl.zones.graveyard, ...pl.zones.exile, ...pl.zones.library]
+      .find((c) => c.isCommander && c.owner === id) || null;
   },
 
   /* ---------------- turn structure ---------------- */
@@ -899,6 +907,10 @@ const gameMethods = {
       if (can.ok) {
         const action = { type: 'cast', iid: c.iid, name: c.name, label: `Cast ${c.name}`, mana: c.card.mana_cost || '', zone: c.zone, cmc: c.cmc };
         this.attachTargetInfo(action, c, playerId, (can.cost?.x ? { x: true } : null));
+        // A spell that requires a target cannot be cast without one (CR 601.2c),
+        // so never offer it: a button that cannot be completed is worse than no
+        // button, both for the player and for a seat driven by the bot.
+        if (action.targetSpec && !action.optional && !(action.legalTargets || []).length) continue;
         actions.push(action);
       }
     }
@@ -906,6 +918,13 @@ const gameMethods = {
     for (const { perm, ability, index } of this.activatableAbilities(playerId)) {
       if (ability.isMana || ability.producesMana) continue; // mana abilities run automatically
       const act = { type: 'activate', iid: perm.iid, index, name: perm.name, label: `${perm.name} — ${ability.label || ability.raw || 'activate'}` };
+      if (ability.target) {
+        const spec = ability.target === 'creatureYouControl' ? { kind: 'permanent', filter: { creature: true, controller: 'you' } }
+          : ability.target === 'creature' ? { kind: 'permanent', filter: { creature: true } }
+          : { kind: 'permanent', filter: {} };
+        if (!legalTargets(this, { source: perm, controller: playerId }, spec).filter((x) => x !== null).length) continue;
+      }
+      if (ability.equip !== undefined && !this.creaturesControlledBy(playerId).length) continue; // nothing to equip
       if (ability.equip !== undefined) {
         act.targetSpec = { kind: 'permanent', filter: { creature: true, controller: 'you' } };
         act.legalTargets = legalTargets(this, { source: perm, controller: playerId }, act.targetSpec).filter((x) => x !== null);

@@ -59,7 +59,14 @@ PHASE 2 — resumed: true
 ### Step 1 — the store
 
 1. Sign up at [upstash.com](https://upstash.com) (free, no card), create a **Redis** database in the region closest to your Render region (e.g. us-east-1 ↔ Ohio/Virginia).
-2. Open the database → **REST API** → copy `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+2. Copy the two REST values — the **Endpoint** (an `https://…upstash.io` URL) and the **Token** under the database's **REST API** section, or **Connect → REST** / **Connect → .env**. There is **no username, password or port** in this pair: if a panel shows you `rediss://default:PASSWORD@host:6379`, that's the TCP view and it's the wrong one. Also make sure the **Read-Only Token** switch is off, or writes will fail.
+3. Check them before deploying:
+
+```bash
+node scripts/check-kv.mjs https://xxx.upstash.io <token>   # PING + SET/GET/DEL round trip
+```
+
+`SETUP.md` §Step 1 has the full walkthrough of this screen, including what each error means.
 
 Free tier (checked 2026-10-15): **500,000 commands/month, 256 MB data, 10 GB bandwidth.** Each store write is a single `SET` of a debounced snapshot, so a busy day is a few hundred commands — call it ~10–15k/month for a few hundred daily players. You will not approach it.
 
@@ -229,12 +236,99 @@ Worth doing yourself:
 
 ## 7. Deploying updates
 
-Render redeploys on push (`autoDeploy: true` in `render.yaml`). On a VPS: `git pull && sudo systemctl restart commander-daily`. Afterwards, always run the two-phase smoke test — it's the only check that proves the daily survived the restart, and it takes ten seconds:
+### How to tell whether you still need to (10 seconds)
 
 ```bash
-node scripts/deploy-smoke.mjs https://your-app.onrender.com phase1
-node scripts/deploy-smoke.mjs https://your-app.onrender.com phase2
+cd ~/commander-daily
+npm run check-live -- https://YOUR-APP.onrender.com
 ```
+
+It compares `index.html`, `app.js` and `style.css` against this checkout byte for byte, checks that the
+newer server endpoints answer, and reports whether the store is external. Exit code 0 means the site is
+current; anything else is printed as a list of things to fix. Run it before you push and again after —
+it is the same judgement call, without the guessing.
+
+### Push it
+
+The route depends on how the service was created (see Step 2 of `SETUP.md`):
+
+| Service created from | How the update ships |
+|---|---|
+| A GitHub repo, linked through your account | commit to the default branch → Render redeploys by itself (`autoDeploy: true`) |
+| **Public Git repository URL** ("skip GitHub" route 2C.2) | commit, then Render → **Manual Deploy → Deploy latest commit** — there is no auto-deploy on this route |
+| An **existing Docker image** (route 2C.3) | rebuild and push the image, then **Manual Deploy → Deploy latest image** |
+
+**Before you push, know this: your data is safe if (and only if) the store is external.** The live site
+reports `"store":"upstash"` at `/healthz`, so runs, leaderboard and uploaded decks survive a redeploy.
+On a local file store they would not — a deploy wipes the container's disk. Check with:
+
+```bash
+curl -s https://YOUR-APP.onrender.com/healthz
+```
+
+### Which files to upload
+
+**Easiest and safest: upload the whole package.** Unzip `commander-daily.zip`, then in the GitHub web UI
+use **Add file → Upload files** and drag in the *contents* of the folder (so paths like `src/server/`
+come across, not a nested `commander-daily/` folder). Files with matching paths are replaced. One
+commit, no chance of missing a file.
+
+If you would rather push only what changed, this is the set — and **every "NEW" line matters**: the
+server imports them at boot, and a missing module is a crash on deploy, not a silent degradation.
+
+```
+public/index.html          public/app.js            public/style.css
+src/server/server.js       src/server/daily.js      src/server/store.js
+src/server/verifyDeck.js   (NEW — imported by server.js)
+src/engine/driver.js       src/engine/game.js       src/engine/ops.js
+src/data/coverage.json
+package.json               README.md                SETUP.md        .env.example
+scripts/run-tests.mjs      (NEW)   scripts/sweep.mjs (NEW)
+tests/engine.test.mjs      tests/ui.test.mjs        tests/community.test.mjs (NEW)
+```
+
+Command line, if you have the repo cloned (fastest of all — and it cannot miss a file):
+
+```bash
+cd /path/to/your/clone
+rsync -av --delete   --exclude '.git' --exclude 'node_modules' --exclude 'data' --exclude '*.zip'   ~/commander-daily/ ./
+git add -A && git commit -m "Board zones, tabs, deck upload, auto-skip, commander-zone fix"
+git push
+```
+
+### Optional: turn on deck moderation
+
+Uploads are public and only checked mechanically, and deck *names* are free text shown in the rotation.
+To be able to remove one: Render → your service → **Environment** → add `ADMIN_TOKEN` (any long random
+string) → save (the service restarts), then
+
+```bash
+curl -s -X POST https://YOUR-APP.onrender.com/api/community/remove \
+  -H 'content-type: application/json' \
+  -d '{"id":"<deck id from /api/community>","token":"<ADMIN_TOKEN>"}'
+```
+
+With no `ADMIN_TOKEN` set the endpoint refuses to act at all.
+
+### Confirm the deploy
+
+```bash
+# 1. the new client is live (three tabs, three zones per player)
+curl -s https://YOUR-APP.onrender.com/ | grep -c 'data-pane'          # expect 3
+curl -s https://YOUR-APP.onrender.com/ | grep -c 'myZoneCreatures'    # expect 1
+# 2. the new server is live
+curl -s https://YOUR-APP.onrender.com/api/community                   # expect {"ok":true,"decks":[...]}
+curl -s https://YOUR-APP.onrender.com/healthz                         # store must still say "upstash"
+# 3. the daily survives a restart — the check that actually matters
+node scripts/deploy-smoke.mjs https://YOUR-APP.onrender.com phase1
+node scripts/deploy-smoke.mjs https://YOUR-APP.onrender.com phase2
+```
+
+`phase2` must print `✓ identical state — the daily survived the restart`. If it does not, the store is
+not shared between restarts — see §1. A cold free-tier instance takes 30–60 s to wake, so the first
+request after a deploy may be slow; that is expected, not a failure.
+
+On a VPS: `git pull && sudo systemctl restart commander-daily`, then the same checks.
 
 ---
 

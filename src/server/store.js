@@ -21,6 +21,7 @@
  *   runs        - one per (token, dayKey, mode): the full engine snapshot
  *   leaderboard - submitted scores per day
  *   votes       - votes for tomorrow's deck, keyed by day
+ *   community   - verified user-uploaded decks that joined the shared rotation
  *   sessions    - issued tokens (hashed) -> created timestamps
  */
 import fs from 'node:fs';
@@ -39,7 +40,31 @@ if ((KV_URL || KV_TOKEN) && !(KV_URL && KV_TOKEN)) {
   console.warn('[store] KV url/token is incomplete — falling back to the file backend.');
 }
 
-const emptyStore = () => ({ runs: {}, leaderboard: [], votes: {}, sessions: {}, meta: { created: new Date().toISOString() } });
+/**
+ * The store is the one thing that must never take the site down. Data can arrive
+ * shaped differently — an older version, a hand-edited file, a half-written KV
+ * value — and a wrong container type used to turn a player's submission into a
+ * 500. Every load goes through here, so every consumer sees the expected shape.
+ */
+function normalise(data) {
+  const base = emptyStore();
+  const out = { ...base, ...(data && typeof data === 'object' ? data : {}) };
+  for (const key of ['runs', 'votes', 'sessions', 'community']) {
+    if (!out[key] || typeof out[key] !== 'object' || Array.isArray(out[key])) out[key] = {};
+  }
+  if (!Array.isArray(out.leaderboard)) {
+    out.leaderboard = out.leaderboard && typeof out.leaderboard === 'object'
+      ? Object.values(out.leaderboard)   // recover entries written as a map
+      : [];
+  }
+  if (!out.meta || typeof out.meta !== 'object') out.meta = { created: new Date().toISOString() };
+  return out;
+}
+
+const emptyStore = () => ({
+  runs: {}, leaderboard: [], votes: {}, sessions: {}, community: {},
+  meta: { created: new Date().toISOString() },
+});
 
 let store = emptyStore();
 let dirty = false;
@@ -68,12 +93,15 @@ async function kv(command) {
 /* load / flush                                                        */
 /* ------------------------------------------------------------------ */
 
+/** Exposed for tests: the load-time shape repair. */
+export const normaliseStore = normalise;
+
 export async function load() {
   if (backend === 'upstash') {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const raw = await kv(['GET', KV_KEY]);
-        if (raw) store = { ...emptyStore(), ...JSON.parse(raw) };
+        if (raw) store = normalise(JSON.parse(raw));
         console.log(`[store] loaded from KV (${Object.keys(store.runs).length} runs, ${store.leaderboard.length} scores)`);
         return store;
       } catch (e) {
@@ -89,7 +117,7 @@ export async function load() {
 
   try {
     if (fs.existsSync(FILE)) {
-      store = { ...emptyStore(), ...JSON.parse(fs.readFileSync(FILE, 'utf8')) };
+      store = normalise(JSON.parse(fs.readFileSync(FILE, 'utf8')));
     }
   } catch (e) {
     console.warn('[store] could not read store, starting fresh:', e.message);
@@ -219,6 +247,35 @@ export function allTime(limit = 50) {
     byName.set(e.name, cur);
   }
   return [...byName.values()].sort((a, b) => b.points - a.points).slice(0, limit);
+}
+
+/* ---------------- community decks ---------------- */
+/*
+ * Uploaded decks that passed verification. Shared by every player, so they live
+ * in the store rather than in process memory: an upload must survive a restarts
+ * and reach the rotation on every instance, not just the one that received it.
+ */
+
+export function communityDecks() {
+  return Object.values(store.community || {});
+}
+
+export function getCommunityDeck(id) {
+  return (store.community || {})[id] || null;
+}
+
+export function putCommunityDeck(record) {
+  store.community = store.community || {};
+  store.community[record.id] = record;
+  save();
+  return record;
+}
+
+export function removeCommunityDeck(id) {
+  if (!store.community || !store.community[id]) return false;
+  delete store.community[id];
+  save();
+  return true;
 }
 
 /* ---------------- votes ---------------- */

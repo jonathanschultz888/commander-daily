@@ -12,7 +12,60 @@
  */
 import { hashSeed } from '../engine/rng.js';
 import { loadAllDecks } from '../decks/index.js';
+import { deckFromRecord } from './verifyDeck.js';
 import * as store from './store.js';
+
+/**
+ * The rotation pool: the hand-built seed decks plus every verified community
+ * upload. Community decks are stored as plain lists and rebuilt here, so they
+ * take exactly the same code path as the seeds (and a deck can never be in the
+ * pool in a shape the engine did not just normalise).
+ *
+ * Ordering is stable — seeds first, then community decks sorted by id — because
+ * every pool that feeds the daily must be identical on every instance, or the
+ * same day would produce different puzzles for different players.
+ */
+/** The UTC instant at which a given day began (01:00 ET on that date). */
+export function dayStartMs(dayKey) {
+  const [y, m, d] = String(dayKey).split('-').map(Number);
+  const probe = Date.UTC(y, m - 1, d, 6, 0, 0); // 1am ET is 05:00Z in summer, 06:00Z in winter
+  for (let offset = -3 * 3600e3; offset <= 3 * 3600e3; offset += 900e3) {
+    const cand = new Date(probe + offset);
+    const p = etParts(cand);
+    if (p.y === y && p.m === m && p.d === d && p.h === RESET_HOUR_ET && p.min === 0) return cand.getTime();
+  }
+  return probe;
+}
+
+/**
+ * Everything that may be drawn into a game.
+ *
+ * Passing a day key freezes the pool at that day's 01:00 ET reset: a deck
+ * uploaded at lunchtime must not change the matchup everyone else already
+ * started this morning, or the day would not be a shared, comparable puzzle.
+ * With no day key the pool is live — that is what practice uses, so a freshly
+ * uploaded deck can be played immediately.
+ */
+export function rotationPool(dayKey = null) {
+  const seeds = loadAllDecks();
+  const cutoff = dayKey ? dayStartMs(dayKey) : Infinity;
+  let community = [];
+  try {
+    community = store.communityDecks()
+      .filter((r) => r && r.verified && r.spells && r.commander)
+      .filter((r) => {
+        const at = Date.parse(r.addedAt || '');
+        if (!dayKey || !Number.isFinite(at)) return true; // no timestamp: treat as always eligible
+        return at < cutoff;
+      })
+      .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+      .map((r) => {
+        try { return deckFromRecord(r); } catch { return null; } // a deck that no longer builds is skipped, not fatal
+      })
+      .filter(Boolean);
+  } catch { community = []; }
+  return [...seeds, ...community];
+}
 
 export const RESET_HOUR_ET = 1;
 
@@ -68,7 +121,7 @@ const BRACKET_ROTATION = [2, 1, 3, 2, 4, 1, 3, 2, 5, 1, 3, 4, 2, 1, 3]; // day-o
  * Deck names come from the public vote when there is a clear winner.
  */
 export function dailySetup(dayKey) {
-  const decks = loadAllDecks();
+  const decks = rotationPool(dayKey);
   const seed = hashSeed(`commander-daily:v1:${dayKey}`);
   const rng = mulberry(seed);
 
@@ -136,8 +189,8 @@ function yesterdayPairing(dayKey, decks) {
 
 /** The three decks players choose between for tomorrow (+ the random option). */
 export function voteOptions(dayKey) {
-  const decks = loadAllDecks();
   const nextKey = nextDayKey(dayKey);
+  const decks = rotationPool(nextKey);
   const seed = hashSeed(`commander-vote:v1:${nextKey}`);
   const rng = mulberry(seed);
   const [y, m, d] = nextKey.split('-').map(Number);
@@ -161,7 +214,7 @@ export function voteOptions(dayKey) {
 }
 
 export function practiceSetup(seed, excludeIds = []) {
-  const decks = loadAllDecks();
+  const decks = rotationPool(); // live pool: practice may use a deck the moment it verifies
   const rng = mulberry(seed);
   const pool = decks.filter((x) => !excludeIds.includes(x.id));
   const brackets = [...new Set(pool.map((x) => x.bracket))];

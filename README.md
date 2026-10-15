@@ -4,11 +4,15 @@ A daily Commander (EDH) puzzle in the shape of Daily Red / Wordle: **one seeded 
 
 ```
 npm start             # http://localhost:3000
-npm test              # 32 tests: bracket legality, the 1am ET clock, restart safety, rules, scoring
+npm test              # 57 tests: bracket legality, the 1am ET clock, restart safety, rules, scoring,
+                      #   zone layout, the upload gate, moderation. Writes to a throwaway store.
+npm run sweep         # 45 days played out (with and without a vote winner) plus practice rounds
 npm run sim           # bot-vs-bot every same-bracket pairing; reports crashes, stalls, game length
 npm run coverage      # card-automation coverage report -> src/data/coverage.json
 npm run fetch-cards   # re-pull oracle data + the live Game Changers list from Scryfall
 node scripts/deploy-smoke.mjs <url> phase1|phase2   # proves a deployed daily survives a restart
+node scripts/check-kv.mjs <rest-url> <token>       # proves an Upstash/REST store works before you deploy
+node scripts/fake-upstash.mjs                      # local stand-in for that REST store, for rehearsing deploys
 ```
 
 Node 20+, no runtime dependencies. Data lives in `data/store.json`, or in a Redis-KV if you set
@@ -118,9 +122,34 @@ public/         index.html, style.css, app.js — no framework, no CDN, works of
 
 ## Testing and simulation
 
-`npm test` — 32 tests, including: all ten decks are exactly 100 cards / legal / bracket-clean; the day key rolls at 01:00 ET in both EST and EDT; identical seeds produce an identical opening board; a revived run continues instead of rerolling; trample assigns exactly lethal then spills; deathtouch + lifelink behave; commander tax is +{2} per prior cast; 21 commander damage ends the game; a mono-white board can't pay for a double-black cost; combos award points; wins and losses settle differently; a full bot-vs-bot game always terminates; **and a run that is packed into storage, serialized and revived before every single action still ends up in exactly the same state** — the regression guard for "it only breaks after a redeploy".
+`npm test` — 57 tests, including: all ten decks are exactly 100 cards / legal / bracket-clean; the day key rolls at 01:00 ET in both EST and EDT; identical seeds produce an identical opening board; a revived run continues instead of rerolling; trample assigns exactly lethal then spills; deathtouch + lifelink behave; commander tax is +{2} per prior cast; 21 commander damage ends the game; a mono-white board can't pay for a double-black cost; combos award points; wins and losses settle differently; a full bot-vs-bot game always terminates; **and a run that is packed into storage, serialized and revived before every single action still ends up in exactly the same state** — the regression guard for "it only breaks after a redeploy".
 
-`npm run sim` — 15 same-bracket pairings, all finishing, zero crashes/stalls, averaging ~30 turns. Use it before adding decks: it is the fastest way to catch a card script that throws.
+`npm run sim` — 15 same-bracket pairings, all finishing, zero crashes/stalls, averaging ~20 turns.
+
+### The board, the tabs, and the rotation
+
+- **Three labelled zones per player.** `creatures → permanents → lands`, front to back, with the two
+  creature rows meeting at the middle of the table (`#combatLine`). The hand is *not* on the battlefield:
+  it is its own raised, accent-lit panel with a live count, and playable cards are ringed and tagged.
+- **Three lobby tabs.** *Daily* (today's matchup, standings, the pool), *Practice* (unlimited rounds that
+  never touch the record), *Tools* (vote for tomorrow, engine stats, upload a deck, browse the community
+  rotation).
+- **The rotation freezes at the reset.** A deck uploaded at lunchtime is playable in practice immediately
+  and joins the daily from the *next* 01:00 ET reset. Without that freeze, someone uploading a deck would
+  change the day out from under everyone who had not started yet — the day has to be the same puzzle for
+  everybody. Uploads are identified by a fingerprint of their 100 cards, so re-submitting the same list
+  updates one slot instead of padding the pool with twins.
+- **Moderation.** Deck names and lists are public, so set `ADMIN_TOKEN` and
+  `POST /api/community/remove {"id": "…", "token": "…"}` takes a deck out of the rotation. With no
+  `ADMIN_TOKEN` set the endpoint refuses to act at all.
+
+
+`npm run sweep` — the round-trip gate: 45 days of the daily, each played **twice** (once with a vote
+winner taking a seat, once without), plus three practice rounds per day. For every day it checks that the
+matchup is deterministic, brackets match, no deck plays itself, the vote winner actually reaches the
+table, the game ends with a winner and points awarded, and a reload (pack → revive) partway through does
+not change the result. It also enforces the invariant that no commander is ever left in a hand or a
+library — the failure that made 2026-01-17 unwinnable. Last run: 90 games, 135 practice rounds, 0 problems. Use it before adding decks: it is the fastest way to catch a card script that throws.
 
 ## Known gaps / next steps
 

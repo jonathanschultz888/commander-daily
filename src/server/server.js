@@ -12,14 +12,14 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { loadAllDecks } from '../decks/index.js';
 import { createGame, reviveGame, packGame } from '../engine/game.js';
-import { runEngine, playOpening, applyAttackers, applyBlockers } from '../engine/driver.js';
+import { runEngine, playOpening, applyPlayerAction as applyAction } from '../engine/driver.js';
 import { makeBot } from '../engine/bot.js';
 import { scoreSummary } from '../engine/score.js';
 import { cardScript } from '../engine/scripts.js';
 import { characteristics, isLand } from '../engine/cards.js';
 import * as store from './store.js';
 import * as daily from './daily.js';
-import { buildImportedDeck } from './importDeck.js';
+import { verifyDeck, communityRecord } from './verifyDeck.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -458,15 +458,65 @@ const server = http.createServer(async (req, res) => {
     /* ---------------- deck import (paste a list) ---------------- */
     if (url.pathname === '/api/import' && req.method === 'POST') {
       const body = await readBody(req);
-      try {
-        const result = buildImportedDeck(String(body.text || ''), { name: body.name });
-        if (body.addToPool && result.summary.total === 100 && !result.summary.offColour.length) {
-          importedPool.set(result.deck.id, result.deck);
-        }
-        return json(res, 200, { ok: true, ...result });
-      } catch (e) {
-        return json(res, 400, { ok: false, error: e.message });
+      // Verification is the gate for the shared rotation. A deck either plays
+      // completely for every player, or it is not in the pool — with the exact
+      // blocking cards reported back, plus automatic substitutions that fix it.
+      const result = verifyDeck(String(body.text || ''), {
+        name: body.name,
+        bracket: body.bracket,
+        repair: body.repair !== false,
+      });
+      let added = null;
+      if (result.ok && body.addToPool !== false) {
+        const record = communityRecord(result.deck, result.report, { addedBy: `session-${tokenHash.slice(0, 8)}` });
+        // The id is a fingerprint of the list, so re-submitting the same cards
+        // refreshes that one slot instead of adding a twin to the pool.
+        const existing = store.getCommunityDeck(record.id);
+        if (existing && existing.addedAt) record.addedAt = existing.addedAt; // keep its place in the day being played out
+        store.putCommunityDeck(record);
+        // Tell the uploader exactly when this deck can be played against other
+        // people: practice immediately, the shared daily from the next reset
+        // (the pool is frozen at 01:00 ET so a day cannot change underfoot).
+        added = {
+          id: record.id, name: record.name, bracket: record.bracket, commander: record.commander,
+          alreadyInRotation: !!existing,
+          addedAt: record.addedAt,
+          playableNow: 'practice',
+          entersDailyAt: daily.dayStartMs(daily.nextDayKey(daily.dayKeyFor())) > Date.now()
+            ? new Date(daily.dayStartMs(daily.nextDayKey(daily.dayKeyFor()))).toISOString()
+            : null,
+          entersDailyOn: daily.nextDayKey(daily.dayKeyFor()),
+        };
+        console.log(`[community] + ${record.name} (${record.commander}, B${record.bracket}) verified ${record.coverage.automated}/${record.coverage.total}`);
       }
+      return json(res, result.ok ? 200 : 422, { ok: result.ok, added, report: result.report });
+    }
+
+    // Moderation. Deck names and the lists themselves are shown publicly, so a
+    // bad upload has to be removable — and only by the operator: the endpoint
+    // refuses to work at all unless ADMIN_TOKEN is configured.
+    if (url.pathname === '/api/community/remove' && req.method === 'POST') {
+      const admin = process.env.ADMIN_TOKEN;
+      if (!admin) return json(res, 403, { error: 'Moderation is disabled: set ADMIN_TOKEN to enable it.' });
+      const body = await readBody(req);
+      if (body.token !== admin) return json(res, 403, { error: 'Forbidden' });
+      const id = String(body.id || '');
+      const existing = store.getCommunityDeck(id);
+      if (!existing) return json(res, 404, { error: 'No such deck' });
+      store.removeCommunityDeck(id);
+      console.log(`[community] − ${existing.name} removed by the operator`);
+      return json(res, 200, { ok: true, removed: id });
+    }
+
+    if (url.pathname === '/api/community' && req.method === 'GET') {
+      const decks = store.communityDecks()
+        .sort((a, b) => String(b.addedAt).localeCompare(String(a.addedAt)))
+        .map((d) => ({
+          id: d.id, name: d.name, commander: d.commander, bracket: d.bracket,
+          theme: d.theme, addedAt: d.addedAt, addedBy: d.addedBy,
+          coverage: d.coverage, verified: !!d.verified,
+        }));
+      return json(res, 200, { ok: true, decks, count: decks.length });
     }
 
     /* ---------------- vote ---------------- */
@@ -521,68 +571,9 @@ const server = http.createServer(async (req, res) => {
 function applyPlayerAction(game, action, sess) {
   if (!action || typeof action !== 'object') return { error: 'missing action' };
   if (game.status === 'over') return { error: 'game is over' };
-  const pid = game.humanId;
-
-  switch (action.type) {
-    case 'pass': {
-      // Real priority pass (CR 117.3d): record it so the driver can end the step
-      // once both players have passed.
-      game.pending = null;
-      game.priorityState = game.priorityState || { passed: [] };
-      if (!game.priorityState.passed.includes(pid)) game.priorityState.passed.push(pid);
-      game.priority = game.other(pid);
-      return { ok: true };
-    }
-    case 'concede': {
-      game.pending = null;
-      game.finish(game.other(game.humanId), { reason: 'you conceded' });
-      return { ok: true };
-    }
-    case 'playLand':
-    case 'cast': {
-      const card = [...game.players[pid].zones.hand, ...game.players[pid].zones.command].find((c) => c.iid === action.iid);
-      if (!card) return { error: 'card not in hand' };
-      if (isLand(card) && action.type === 'cast') return { error: 'lands are played, not cast' };
-      const res = game.cast(pid, card, { targets: (action.targets || []).map((t) => resolveTarget(game, t)), x: action.x || 0, mode: action.mode });
-      if (!res.ok) return { error: res.reason || 'illegal cast' };
-      game.pending = null;
-      return { ok: true };
-    }
-    case 'activate': {
-      const perm = game.battlefield.find((p) => p.iid === action.iid);
-      if (!perm) return { error: 'permanent not found' };
-      const script = cardScript(perm);
-      const ability = script.abilities[action.index];
-      if (!ability) return { error: 'no such ability' };
-      const res = game.activate(pid, perm, ability, { targets: (action.targets || []).map((t) => resolveTarget(game, t)), x: action.x || 0 });
-      if (!res.ok) return { error: res.reason || 'illegal activation' };
-      game.pending = null;
-      return { ok: true };
-    }
-    case 'attackers': {
-      if (game.pending?.type !== 'declareAttackers') return { error: 'not choosing attackers' };
-      const legal = new Set(game.pending.legal);
-      const chosen = (action.iids || []).filter((i) => legal.has(i));
-      applyAttackers(game, chosen);
-      return { ok: true };
-    }
-    case 'blockers': {
-      if (game.pending?.type !== 'declareBlockers') return { error: 'not choosing blockers' };
-      const legal = game.pending.legal || {};
-      const pairs = (action.pairs || []).filter((p) => (legal[p.blocker] || []).includes(p.attacker));
-      applyBlockers(game, pairs);
-      return { ok: true };
-    }
-    default:
-      return { error: `unknown action ${action.type}` };
-  }
-}
-
-function resolveTarget(game, ref) {
-  if (typeof ref === 'number') return ref;
-  if (typeof ref === 'string' && ref.startsWith('player:')) return Number(ref.split(':')[1]);
-  if (typeof ref === 'string') return game.battlefield.find((p) => p.iid === ref) || ref;
-  return ref;
+  // One implementation, shared with every other way a seat can be driven
+  // (see src/engine/driver.js) — a player over HTTP is not a special case.
+  return applyAction(game, game.humanId, action);
 }
 
 /* ------------------------------------------------------------------ */
@@ -629,8 +620,6 @@ function rulesInfo() {
 }
 
 const practiceGames = new Map();
-/** Imported decks stay in memory for the session; promote them into lists.js to persist. */
-const importedPool = new Map();
 
 let shuttingDown = false;
 async function shutdown(signal) {
