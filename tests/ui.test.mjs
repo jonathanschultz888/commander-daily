@@ -252,3 +252,90 @@ test('a player can report a card, and the client shows the engine verdict', () =
   // the styles it relies on exist
   assert.ok(/\.report-row\b/.test(css) && /\.report-verdict\b/.test(css), 'and it is styled');
 });
+
+/* ------------------------------------------------------------------ *
+ * Round 4: the things the player asked for by name.
+ * ------------------------------------------------------------------ */
+
+test('the side panels fold away and stay folded', () => {
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const blocks = [...html.matchAll(/<details class="panel[^"]*" id="([^"]+)"/g)].map((m) => m[1]);
+  assert.ok(blocks.includes('railPoints'), 'points is a foldable block');
+  assert.ok(blocks.includes('railMatch'), 'so is the match panel');
+  assert.ok(blocks.includes('railLog'), 'and the log');
+  assert.ok(/<summary>/.test(html), 'each one has a summary to click');
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.ok(/localStorage\.setItem\(RAIL_KEY/.test(app), 'the open/closed state is remembered');
+  assert.ok(/rail-hidden/.test(app) && /rail-hidden/.test(css), 'and the whole rail can be hidden from the strip');
+});
+
+test('the three sections are buttons at the top, and reachable from inside a game', () => {
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  for (const pane of ['daily', 'practice', 'tools']) {
+    assert.ok(new RegExp(`data-pane="${pane}"`).test(html), `${pane} is one of the three buttons`);
+  }
+  assert.ok(/Daily Challenge/.test(html) && /Practice/.test(html) && /Tools/.test(html), 'and they are labelled for a human');
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  for (const id of ['stripDaily', 'stripPractice', 'stripTools', 'gameLobbyBtn']) {
+    assert.ok(new RegExp(`#\\$?\\{?.*${id}|${id}`).test(html + app), `${id} exists and is wired`);
+  }
+  assert.ok(/leaveTo|leaveGameTo/.test(app), 'leaving the board from inside a game is wired up');
+});
+
+test('a card states its own power, toughness, keywords and counters', () => {
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.ok(/function keywordBadges/.test(app) && /keywordBadges\(card\)/.test(app), 'keyword badges are drawn on the card');
+  assert.ok(/function counterPips/.test(app) && /counterPips\(card\)/.test(app), 'counter pips are drawn on the card');
+  assert.ok(/counterList/.test(app), 'and they come from the engine\'s own counter list, not a guess');
+  assert.ok(/isCreatureNow/.test(app), 'a land that has been animated shows a power/toughness while it is a creature');
+  assert.ok(/temp.*⧗|⧗/.test(app), 'a counter that expires is marked as temporary');
+  // the engine has to keep sending those fields
+  const server = fs.readFileSync(new URL('../src/server/server.js', import.meta.url), 'utf8');
+  for (const field of ['counterList', 'keywordsPrinted', 'printed', 'animated', 'powerDelta|tempBonus']) {
+    assert.ok(new RegExp(field).test(server), `the view carries ${field}`);
+  }
+});
+
+test('blocking can be assigned in either order, and the pair is visible', () => {
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  // both halves of the pair respond to a tap
+  assert.ok(/declareBlockers' && p\.id === S\.view\.humanId/.test(app), 'both the attacker and the blocker are clickable');
+  assert.ok(/onBlockerTap/.test(app), 'which runs the block chooser');
+  assert.ok(/role: isMyCreature \? 'blocker' : 'attacker'/.test(app),
+    'and the chooser knows which half it is holding, so order does not matter');
+  assert.ok(/const blocker = isMyCreature \? iid : pick/.test(app) && /const attacker = isAttacker \? iid : pick/.test(app),
+    'the pair is assembled from whichever end was tapped');
+  assert.ok(/pair-chip/.test(app) && /pair-chip/.test(css), 'assigned blocks are listed as chips that can be undone');
+  assert.ok(/Confirm \\$\\{S\.blocks\.length\\}|Confirm \$\{S\.blocks\.length\}/.test(app), 'and confirmed in one press');
+});
+
+test('there is an attack-with-everything button', () => {
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.ok(/id="attackAll"/.test(app), 'the dock offers it');
+  assert.ok(/S\.attackers = new Set\(wasAll \? \[\] : legal\)/.test(app),
+    'and it selects exactly the creatures the engine says may attack (never a tapped one, never a 0-power one)');
+});
+
+test('an opponent aiming at you opens a popup with your legal responses', () => {
+  const server = fs.readFileSync(new URL('../src/server/server.js', import.meta.url), 'utf8');
+  assert.ok(/function threatFor/.test(server), 'the server works out when the human is being targeted');
+  assert.ok(/threat: threatFor\(game\)/.test(server), 'and sends it with the view');
+  assert.ok(/instant: isInstantSpeedAction/.test(server), 'every legal action says whether it can be played in response');
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.ok(/function maybeShowThreat/.test(app) && /maybeShowThreat\(\)/.test(app), 'the client pops it up');
+  assert.ok(/Let it resolve|threatAllow/.test(app), 'and always offers the "do nothing" way out');
+  assert.ok(/\.opt\.respond|opt respond/.test(app), 'the responses are the same buttons used everywhere else');
+});
+
+test('a card can be reviewed on the fly, and the check runs again on demand', () => {
+  const server = fs.readFileSync(new URL('../src/server/server.js', import.meta.url), 'utf8');
+  assert.ok(/\/api\/card-check/.test(server), 'the card-check endpoint exists');
+  assert.ok(/\/recheck/.test(server) && /recheck/.test(server), 'and a recheck path re-derives the analysis');
+  const explain = fs.readFileSync(new URL('../src/engine/explain.js', import.meta.url), 'utf8');
+  assert.ok(/export function explainCard/.test(explain), 'the engine can explain a card in words');
+  assert.ok(/gaps:/.test(explain), 'including the clauses it cannot read — honesty is the point');
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.ok(/function cardCheck/.test(app), 'the client has the screen');
+  assert.ok(/Check this card again/.test(app), 'with a button that runs the check again');
+  assert.ok(/How does this card work/.test(app), 'and a way in from the card sheet');
+});

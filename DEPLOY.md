@@ -294,7 +294,7 @@ scripts/run-tests.mjs      scripts/sweep.mjs        scripts/simall.mjs
 tests/engine.test.mjs      tests/ui.test.mjs        tests/community.test.mjs
 ```
 
-Anything under `src/` that you are unsure about: upload it. The whole thing is 49 files (~1 MB of source, ~290 KB zipped)
+Anything under `src/` that you are unsure about: upload it. The whole thing is 50 files (~1.1 MB of source, ~300 KB zipped)
 compressed, and every module under `src/` is reachable from the server's import graph — a missing file
 is a crash on boot, never a quiet degradation.
 

@@ -281,7 +281,7 @@ async function startPractice() {
 
 function enterGame(data, mode) {
   S.view = data.view; S.pending = data.pending; S.mode = mode;
-  S.lastCursor = 0; S.takeoverShown = false; S.gameOverShown = false; S.attackers.clear(); S.blocks = [];
+  S.lastCursor = 0; S.takeoverShown = false; S.gameOverShown = false; S.attackers.clear(); S.blocks = []; S.blockPick = null; S.threatSeen = null;
   $('#lobby').hidden = true;
   $('#game').hidden = false;
   document.body.classList.add('game-active');
@@ -301,6 +301,7 @@ function enterGame(data, mode) {
 function renderGame() {
   const v = S.view;
   if (!v) return;
+  if (!v) return;
   const me = v.players[0], opp = v.players[1];
 
   $('#oppName').textContent = opp.name;
@@ -309,6 +310,8 @@ function renderGame() {
   $('#myLife').textContent = me.life;
   $('#myDeckName').textContent = `${me.deckName} · B${me.bracket}`;
   $('#metaTurn').textContent = v.turn;
+  const mh = $('#matchHint');
+  if (mh) mh.textContent = `turn ${v.turn} · ${v.activePlayer === 0 ? 'you' : 'them'} ${v.step}`;
   $('#metaPhase').textContent = `${v.activePlayer === 0 ? 'Your' : 'Their'} ${v.step}`;
   $('#metaOppPts').textContent = v.oppPoints;
   $('#pointsMode').textContent = S.mode === 'daily' ? 'Daily' : 'Practice';
@@ -329,7 +332,61 @@ function renderGame() {
   renderActions();
   renderPromptBar();
   playNewEvents();
+  maybeShowThreat();
   if (v.status === 'over') showGameOver();
+}
+
+/**
+ * Keyword badges: the abilities a creature currently has, printed on the card face.
+ * "First strike, deathtouch and lifelink" is the difference between a fair block and
+ * a losing one, so it cannot live in a tooltip — the card says it, short enough to
+ * fit: 3 badges, then a "+n" for the rest.
+ */
+const KEYWORD_SHORT = {
+  Flying: 'Fly', Reach: 'Reach', Trample: 'Tramp', Deathtouch: 'Deathtouch', Lifelink: 'Lifelink',
+  'First strike': '1st strike', 'Double strike': '2x strike', Haste: 'Haste', Vigilance: 'Vigil',
+  Menace: 'Menace', Indestructible: 'Indestructible', Hexproof: 'Hexproof', Shroud: 'Shroud',
+  Flash: 'Flash', Unblockable: 'Unblockable', Infect: 'Infect', Defender: 'Defender',
+  Protection: 'Protection', Ward: 'Ward', Prowess: 'Prowess', Changeling: 'Changeling',
+  'Ward {2}': 'Ward', Skulk: 'Skulk',
+};
+// Not every "keyword" in the engine is one on the card: some are the engine's own
+// flags for a restriction it applies (`CantAttack` from a "can't attack" static), and
+// some are ability words that never appear in the keyword line (Enchant, Equip).
+const KEYWORD_HIDDEN = new Set([
+  'Enchant', 'Equip', 'CantAttack', 'CantBlock', 'CantBeBlocked', 'CantBeCountered',
+  'CantGainLife', 'NoUntap', 'MustAttack', 'MustBlock',
+  // "Ability words" — Landfall, Metalcraft, Ascend and friends have no rules meaning
+  // of their own. They are a label for the sentence after them, and a badge reading
+  // "LAND ALL" on the card face is noise, not information.
+  'Landfall', 'Metalcraft', 'Ascend', 'Revolt', 'Raid', 'Ferocious', 'Delirium',
+  'Threshold', 'Heroic', 'Constellation', 'Domain', 'Converge', 'Battalion',
+  'Inspired', 'Morbid', 'Addendum', 'Spectacle', 'Undergrowth', 'Adamant', 'Devotion',
+]);
+
+function keywordBadges(card) {
+  const list = (card.keywords || []).filter((k) => !KEYWORD_HIDDEN.has(k));
+  if (!list.length) return '';
+  const shown = list.slice(0, 3).map((k) => `<span class="kw" title="${esc(k)}">${esc(KEYWORD_SHORT[k] || k)}</span>`);
+  if (list.length > 3) shown.push(`<span class="kw more" title="${esc(list.slice(3).join(', '))}">+${list.length - 3}</span>`);
+  const printed = new Set(card.keywordsPrinted || []);
+  return `<div class="kws">${list.slice(0, 3).map((k, i) => printed.has(k) ? shown[i] : shown[i].replace('class="kw"', 'class="kw gained"')).join('')}${list.length > 3 ? shown[3] : ''}</div>`;
+}
+
+/** Counter pips: kind and count, and whether one is going to vanish at end of turn. */
+function counterPips(card) {
+  const list = card.counterList || [];
+  if (!list.length) return '';
+  const icon = { '+1/+1': '+', '-1/-1': '−', charge: '⚡', slumber: '☾', quest: '❖', loyalty: '♥', shield: '⛨', story: '✦' };
+  return list.map((c) => {
+    const glyph = icon[c.type];
+    // the count is always shown ("+2", "−1"): "+ +" on a card with two of them tells
+    // the player nothing, and a temporary counter carries the sandglass that says it
+    // is about to disappear
+    const label = glyph ? `${glyph}${c.n}` : c.n > 1 ? `${c.n}×${c.type}` : c.type;
+    const title = `${c.n} ${c.type} counter${c.n === 1 ? '' : 's'}${c.temporary ? ' — until end of turn (this one expires)' : ' — permanent'}`;
+    return `<span class="counter-pip${c.type === '-1/-1' ? ' minus' : ''}${c.temporary ? ' temp' : ''}" title="${esc(title)}">${esc(label)}${c.temporary ? '<span class="sand">⧗</span>' : ''}</span>`;
+  }).join('');
 }
 
 function cardEl(card, { inHand = false, controller = 0, legalTarget = false } = {}) {
@@ -342,22 +399,26 @@ function cardEl(card, { inHand = false, controller = 0, legalTarget = false } = 
   }
   if (card.image) n.style.setProperty('--img', `url(${card.image})`);
   const art = card.image ? `<div class="art" style="background-image:url('${card.image}')"></div>` : '';
-  const pt = card.power != null && card.toughness != null && !card.isLand ? `<div class="pt">${card.power}/${card.toughness}</div>` : '';
+  // a land that has been animated is a creature right now, and says so
+  const isCreatureNow = card.power != null && card.toughness != null && (card.types || []).includes('Creature');
+  const printed = card.printed || {};
+  const changed = printed.power != null && (printed.power !== card.power || printed.toughness !== card.toughness);
+  const ptTitle = changed ? `Printed ${printed.power}/${printed.toughness} — now ${card.power}/${card.toughness}` : 'Power/toughness';
+  const pt = isCreatureNow
+    ? `<div class="pt${changed ? ' boosted' : ''}" title="${esc(ptTitle)}">${card.power}/${card.toughness}</div>`
+    : '';
   n.innerHTML = `${art}
     <div class="name">${esc(card.name)}</div>
     <div class="card-mid">
       <div class="type">${esc(card.type_line || '')}</div>
       <div class="cost">${esc(card.mana_cost || '')}</div>
     </div>
+    ${keywordBadges(card)}
     <div class="text">${esc(trimOracle(card.oracle_text))}</div>
-    ${pt}`;
-  if (card.counters && (card.counters['+1/+1'] || card.counters['-1/-1'] || card.counters.slumber || card.counters.charge)) {
-    const c = card.counters;
-    if (c['+1/+1']) n.appendChild(el('div', 'counter-pip', `+${c['+1/+1']}`));
-    if (c['-1/-1']) n.appendChild(el('div', 'counter-pip minus', `-${c['-1/-1']}`));
-    if (c.slumber) n.appendChild(el('div', 'counter-pip', `☾${c.slumber}`));
-    if (c.charge) n.appendChild(el('div', 'counter-pip', `⚡${c.charge}`));
-  }
+    ${pt}
+    ${card.animated ? `<span class="anim-pip" title="${esc(`A land, animated into a ${card.animated.untilEndOfTurn ? 'creature until end of turn' : 'creature'}`)}">${card.animated.untilEndOfTurn ? '⧗' : '✦'} creature</span>` : ''}`;
+  const pips = counterPips(card);
+  if (pips) n.insertAdjacentHTML('beforeend', `<div class="pips">${pips}</div>`);
   if (card.damage > 0) n.appendChild(el('div', 'dmg-pip', `${card.damage}`));
   if (card.attachments && card.attachments.length) n.appendChild(el('div', 'attach-pip', `⚔${card.attachments.length}`));
   if (card.unsupported) n.appendChild(el('div', 'unsupported-dot', '≈'));
@@ -432,7 +493,8 @@ function openCardMenu(card, node) {
     ${opts.length ? `<div class="opt-list">${rows}</div>` : `<p class="muted">Nothing legal to do with this card right now${mine ? '' : ' — it is not yours'}. You can still read it below.</p>`}
     <div class="opt-read">${esc(trimOracle(card.oracle_text) || 'No rules text.')}</div>
     <div class="opt-tools">
-      <button class="ghost" id="optReport">⚑ Report a problem with this card</button>
+      <button class="ghost" id="optCheck">🔍 How does this card work?</button>
+      <button class="ghost" id="optReport">⚑ Report a problem</button>
     </div>`);
   $$('#modalBody .opt').forEach((btn) => {
     btn.onclick = () => {
@@ -442,7 +504,9 @@ function openCardMenu(card, node) {
     };
   });
   const rep = $('#optReport');
-  if (rep) rep.onclick = () => { closeModal(); inspect(card); };
+  if (rep) rep.onclick = () => { closeModal(); reportCard(card); };
+  const chk = $('#optCheck');
+  if (chk) chk.onclick = () => { closeModal(); cardCheck(card); };
 }
 
 function renderHand(me) {
@@ -521,15 +585,25 @@ function renderBattlefield(p, which) {
     const n = cardEl(c, { controller: p.id, legalTarget: S.targeting?.targets?.has(c.iid) });
     if (S.attackers.has(c.iid)) n.classList.add('attacker-mark');
     if (S.blocks.some((b) => b.blocker === c.iid)) n.classList.add('blocker-mark');
-    if (S.blockPick === c.iid) n.classList.add('selected');
-    if (S.pending?.type === 'declareAttackers' && p.id === 0 && S.pending.legal.includes(c.iid)) {
+    if (S.blockPick?.iid === c.iid) n.classList.add('selected', 'block-pick');
+    if (S.pending?.type === 'declareAttackers' && p.id === S.view.humanId && (S.pending.legal || []).includes(c.iid)) {
       n.style.cursor = 'pointer';
       n.addEventListener('click', () => {
         if (S.attackers.has(c.iid)) S.attackers.delete(c.iid); else S.attackers.add(c.iid);
         renderGame();
       });
-    } else if (S.pending?.type === 'declareBlockers' && p.id === 0) {
-      n.addEventListener('click', () => onBlockerTap(c.iid));
+    } else if (S.pending?.type === 'declareBlockers' && p.id === S.view.humanId) {
+      // Both halves of the block are clickable: tap the attacker to pick it, or tap
+      // your own creature first — whichever order the player thinks in. (Before this
+      // only your creatures responded to a tap, so an attacker could never be the
+      // second half of the pair, which is why blocking could not be completed.)
+      const isAttacker = (S.pending.attackers || []).includes(c.iid);
+      const isMyCreature = p.id === S.view.humanId && (S.pending.blockers || []).includes(c.iid);
+      if (isAttacker || isMyCreature) {
+        n.classList.add('blockable');
+        n.style.cursor = 'pointer';
+        n.addEventListener('click', () => onBlockerTap(c.iid));
+      }
     } else if (S.targeting) {
       n.addEventListener('click', () => onTargetPick(c.iid));
     }
@@ -600,6 +674,8 @@ function renderPoints() {
   const v = S.view;
   const total = v.points || 0;
   $('#pointsTotal').textContent = total;
+  const inline = $('#pointsTotalInline');
+  if (inline) inline.textContent = String(total);
   const max = Math.max(30, total, v.oppPoints || 0);
   $('#pointsBarFill').style.width = `${Math.min(100, (total / max) * 100)}%`;
   $('#pointsList').innerHTML = (v.pointLines || []).slice(-12).map((l) => `
@@ -678,21 +754,41 @@ function renderPromptBar() {
     return;
   }
   if (p.type === 'declareAttackers') {
+    const legal = p.legal || [];
+    const allIn = S.attackers.size === legal.length && legal.length > 0;
     bar.innerHTML = `<span class="dock-title">⚔ Attack</span>
       <span class="grow">Tap your creatures to send them, then confirm. Opponent at ${p.defenderLife} life.</span>
+      <button class="ghost" id="attackAll"${legal.length ? '' : ' hidden'} title="Send every creature that can attack">${allIn ? '✓ All in' : '⚔️ Attack with all'}</button>
       <button class="primary" id="confirmAttack">${S.attackers.size ? `Attack with ${S.attackers.size}` : 'No attackers'}</button>
       <button class="ghost tiny" id="clearAttack"${S.attackers.size ? '' : ' hidden'}>Clear</button>`;
     $('#confirmAttack').onclick = () => send({ type: 'attackers', iids: [...S.attackers] });
     $('#clearAttack').onclick = () => { S.attackers.clear(); renderGame(); };
+    $('#attackAll').onclick = () => {
+      const wasAll = S.attackers.size === legal.length;
+      S.attackers = new Set(wasAll ? [] : legal);
+      renderGame();
+      toast(wasAll ? 'Attackers cleared.' : `Attacking with everything that can: ${S.attackers.size} creature${S.attackers.size === 1 ? '' : 's'}.`, 2400);
+    };
     return;
   }
   if (p.type === 'declareBlockers') {
+    const pairs = S.blocks.map((b) => `<button class="pair-chip" data-block="${esc(b.blocker)}" title="Tap to undo this block">${esc(cardNameFor(b.blocker))} <span class="muted">blocks</span> ${esc(cardNameFor(b.attacker))} <span class="x">✕</span></button>`).join('');
+    const unblocked = (p.attackers || []).filter((a) => !S.blocks.some((b) => b.attacker === a));
+    const hint = S.blockPick
+      ? (S.blockPick.role === 'blocker'
+        ? `${cardNameFor(S.blockPick.iid)} is ready — tap the attacker it blocks.`
+        : `${cardNameFor(S.blockPick.iid)} is the attacker — tap one of your creatures to block it.`)
+      : 'Tap a creature of yours, then the attacker it blocks (or the other way round).';
     bar.innerHTML = `<span class="dock-title">🛡 Block</span>
-      <span class="grow">Tap one of your creatures, then the attacker it blocks. ${S.blocks.length ? `${S.blocks.length} assigned.` : 'No blocks assigned.'}</span>
-      <button class="primary" id="confirmBlocks">${S.blocks.length ? 'Confirm blocks' : 'Take it'}</button>
-      <button class="ghost tiny" id="clearBlocks"${S.blocks.length ? '' : ' hidden'}>Clear</button>`;
+      <div class="dock-actions">${pairs || `<span class="grow">${hint}</span>`}</div>
+      <button class="primary" id="confirmBlocks">${S.blocks.length ? `Confirm ${S.blocks.length} block${S.blocks.length === 1 ? '' : 's'}` : 'Take the damage'}</button>
+      <button class="ghost tiny" id="clearBlocks"${S.blocks.length ? '' : ' hidden'}>Clear all</button>`;
+    $$('#promptBar .pair-chip').forEach((btn) => {
+      btn.onclick = () => { S.blocks = S.blocks.filter((b) => b.blocker !== btn.dataset.block); renderGame(); };
+    });
     $('#confirmBlocks').onclick = () => send({ type: 'blockers', pairs: S.blocks });
-    $('#clearBlocks').onclick = () => { S.blocks = []; renderGame(); };
+    $('#clearBlocks').onclick = () => { S.blocks = []; S.blockPick = null; renderGame(); };
+    if (unblocked.length && S.blocks.length) bar.insertAdjacentHTML('afterbegin', `<span class="muted small">${unblocked.length} unblocked</span>`);
     return;
   }
   if (p.type === 'priority') {
@@ -734,16 +830,83 @@ function describeSpec(spec) {
   return bits.length ? ` — ${bits.join(' ')}` : '';
 }
 
+/**
+ * "Check this card": what is the engine going to do with it?
+ *
+ * Not a wiki page — the server reads the card's own script and answers in plain
+ * words: every ability and trigger, what the engine will ask the player to choose,
+ * and the clauses it cannot read. The *Check again* button re-derives the whole
+ * analysis from scratch (fresh compile, current corrections), which is what to press
+ * the moment a card has just done something surprising.
+ */
+async function cardCheck(card, node) {
+  const art = artOf(card.image);
+  openModal(`
+    <div class="opt-head" ${art ? `style="--opt-art:url('${art}')"` : ''}>
+      <div class="opt-portrait" ${card.image ? `style="background-image:url('${card.image}')"` : ''}></div>
+      <div>
+        <h1>${esc(card.name)}</h1>
+        <p class="muted small">${esc(card.type_line || '')}${card.mana_cost ? ` · <span class="opt-mana">${esc(card.mana_cost)}</span>` : ''}</p>
+      </div>
+    </div>
+    <div id="checkBody"><p class="muted small">Asking the engine how it plays this card…</p></div>`);
+  const load = async (recheck) => {
+    const body = document.querySelector('#checkBody');
+    if (body) body.innerHTML = '<p class="muted small">Checking the card against the engine…</p>';
+    try {
+      const out = await api('/api/card-check', { name: card.name, recheck: !!recheck });
+      const html = cardCheckHtml(out);
+      const box = document.querySelector('#checkBody');
+      if (!box) return;
+      box.innerHTML = html;
+      const again = document.querySelector('#checkAgain');
+      if (again) again.onclick = () => load(true);
+      const rep = document.querySelector('#checkReport');
+      if (rep) rep.onclick = () => reportCard(card);
+    } catch (e) {
+      const box = document.querySelector('#checkBody');
+      if (box) box.innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+    }
+  };
+  await load(false);
+}
+
+function cardCheckHtml(out) {
+  const mark = (f) => (f.bad ? '<span class="mark bad">✖</span>' : f.warn ? '<span class="mark warn">⚠</span>' : '<span class="mark ok">✔</span>');
+  const kw = (out.keywords || []).length ? `<p class="small"><span class="muted">Keywords:</span> ${out.keywords.map((k) => `<span class="kw">${esc(k)}</span>`).join(' ')}</p>` : '';
+  const spell = (out.spell || []).length
+    ? `<div class="check-block"><h3>When it resolves</h3><ul>${out.spell.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>` : '';
+  const abilities = (out.abilities || []).length
+    ? `<div class="check-block"><h3>Abilities &amp; triggers</h3><ul>${out.abilities.map((a) => `<li>${a.cost ? `<strong>${esc(a.cost)}:</strong> ` : a.when ? `<strong>When ${esc(a.when)}:</strong> ` : ''}${esc(a.what || '')}</li>`).join('')}</ul></div>` : '';
+  const statics = (out.statics || []).length ? `<div class="check-block"><h3>Always on</h3><ul>${out.statics.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>` : '';
+  const mana = (out.mana || []).length ? `<div class="check-block"><h3>Mana</h3><ul>${out.mana.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>` : '';
+  const gaps = (out.gaps || []).length
+    ? `<div class="check-block"><h3>The engine is not sure about</h3><ul>${out.gaps.map((x) => `<li class="bad">${esc(x)}</li>`).join('')}</ul></div>` : '';
+  const findings = (out.findings || []).length
+    ? `<div class="check-block"><h3>What the check found</h3><ul>${out.findings.map((f) => `<li>${mark(f)} ${esc(f.text)}</li>`).join('')}</ul></div>` : '';
+  return `
+    <p class="small"><span class="pill ${out.coverage === 'full' || out.coverage === 'scripted' ? 'accent' : ''}">${esc(out.coverage || 'unknown')}</span>
+      ${out.asksFor ? `<span class="muted small">${esc(out.asksFor)}</span>` : ''}</p>
+    ${kw}${spell}${abilities}${statics}${mana}${gaps}${findings}
+    <div class="check-read"><span class="muted small">Printed text</span><div class="opt-read">${esc(out.text || 'No rules text.')}</div></div>
+    <div class="opt-tools">
+      <button class="ghost" id="checkAgain">⇄ Check this card again</button>
+      <button class="ghost" id="checkReport">⚑ Something went wrong with it</button>
+    </div>`;
+}
+
 function inspect(card) {
   openModal(`<h1>${esc(card.name)}</h1>
     <div class="pill-row"><span class="pill accent">${esc(card.mana_cost || '')}</span><span class="pill">${esc(card.type_line || '')}</span>
     ${card.isCommander ? '<span class="pill accent">Commander</span>' : ''}${card.isToken ? '<span class="pill">Token</span>' : ''}</div>
     <p style="white-space:pre-wrap">${esc(card.oracle_text || 'No rules text.')}</p>
     ${card.power != null ? `<p class="muted">Power/toughness: ${card.power}/${card.toughness}</p>` : ''}
-    <div class="report-row"><button class="ghost tiny" id="btnReportCard">⚑ This card misbehaved</button>
-    <span class="muted small">Tell us what you saw — the engine checks the card and fixes what it can.</span></div>`);
+    <div class="report-row"><button class="primary tiny" id="btnCheckCard">🔍 How does the engine play it?</button>
+    <button class="ghost tiny" id="btnReportCard">⚑ This card misbehaved</button></div>`);
   const btn = $('#btnReportCard');
   if (btn) btn.onclick = () => reportCard(card);
+  const check = $('#btnCheckCard');
+  if (check) check.onclick = () => cardCheck(card);
 }
 
 /**
@@ -922,19 +1085,113 @@ function onTargetPick(iid) {
   sendAction(payload);
 }
 
+/**
+ * Assigning a block, in whichever order the player taps.
+ *
+ * `S.blockPick` may hold either half: a creature of yours waiting for an attacker,
+ * or an attacker waiting for a blocker. The second tap completes the pair, so a
+ * player who taps the attacker first is not told "wrong order" — they are simply
+ * picking the other end first.
+ */
 function onBlockerTap(iid) {
   const p = S.pending;
   if (!p || p.type !== 'declareBlockers') return;
-  const isBlocker = (p.blockers || []).includes(iid);
-  if (isBlocker) { S.blockPick = S.blockPick === iid ? null : iid; renderGame(); return; }
-  // tapped an attacker
-  if (!S.blockPick) { toast('Tap one of your creatures first, then the attacker it blocks.'); return; }
-  const legal = (p.legal && p.legal[S.blockPick]) || [];
-  if (!legal.includes(iid)) { toast('That blocker cannot legally block this attacker (flying, protection, or already blocking).'); return; }
-  S.blocks = S.blocks.filter((b) => b.blocker !== S.blockPick);
-  S.blocks.push({ blocker: S.blockPick, attacker: iid });
+  const isMyCreature = (p.blockers || []).includes(iid);
+  const isAttacker = (p.attackers || []).includes(iid);
+
+  // tapping the same card again clears the pending half
+  if (S.blockPick && S.blockPick.iid === iid) {
+    S.blockPick = null;
+    toast('Cleared.');
+    renderGame();
+    return;
+  }
+
+  if (!S.blockPick) {
+    S.blockPick = { iid, role: isMyCreature ? 'blocker' : 'attacker' };
+    if (isMyCreature) {
+      const legal = (p.legal || {})[iid] || [];
+      toast(legal.length
+        ? `${cardNameFor(iid)} can block ${legal.length} attacker${legal.length === 1 ? '' : 's'} — tap the one it should block.`
+        : `${cardNameFor(iid)} cannot block anything right now.`, 2800);
+    } else {
+      const blockers = (p.blockers || []).filter((b) => ((p.legal || {})[b] || []).includes(iid));
+      toast(blockers.length
+        ? `${cardNameFor(iid)} can be blocked by ${blockers.length} of your creature${blockers.length === 1 ? '' : 's'} — tap one.`
+        : `${cardNameFor(iid)} cannot be blocked by anything you have.`, 2800);
+    }
+    renderGame();
+    return;
+  }
+
+  // complete the pair
+  const pick = S.blockPick.iid;
+  const blocker = isMyCreature ? iid : pick;
+  const attacker = isAttacker ? iid : pick;
+  if (!((p.blockers || []).includes(blocker) && (p.attackers || []).includes(attacker))) {
+    toast('A block pairs one of your creatures with an attacking creature.');
+    return;
+  }
+  const legal = (p.legal || {})[blocker] || [];
+  if (!legal.includes(attacker)) {
+    toast(`${cardNameFor(blocker)} cannot block ${cardNameFor(attacker)} — flying, protection, or it is already blocking something else.`, 3400);
+    return;
+  }
+  S.blocks = S.blocks.filter((b) => b.blocker !== blocker && b.attacker !== attacker);
+  S.blocks.push({ blocker, attacker });
   S.blockPick = null;
+  const rest = (p.attackers || []).filter((a) => !S.blocks.some((b) => b.attacker === a));
+  toast(`${cardNameFor(blocker)} blocks ${cardNameFor(attacker)}.${rest.length ? ` ${rest.length} attacker${rest.length === 1 ? '' : 's'} still unblocked.` : ' Everything is blocked.'}`, 2600);
   renderGame();
+}
+
+/** A name for an iid on either side of the table (the block flow needs both). */
+function cardNameFor(iid) {
+  const perm = (S.view?.battlefield || []).find((c) => c.iid === iid);
+  return perm?.name || 'That creature';
+}
+
+/**
+ * The rail folds away, and remembers.
+ *
+ * The in-game screen has four blocks beside the board, and on a phone that is a lot
+ * of furniture; each one is a <details>, so the player decides what stays. The choice
+ * is stored per browser, because it is a preference about taste, not about the game.
+ */
+const RAIL_KEY = 'cd.rail';
+function railState() {
+  try { return JSON.parse(localStorage.getItem(RAIL_KEY) || '{}'); } catch { return {}; }
+}
+function saveRail(patch) {
+  const st = railState();
+  Object.assign(st, patch);
+  try { localStorage.setItem(RAIL_KEY, JSON.stringify(st)); } catch { /* private mode */ }
+}
+function wireRail() {
+  const saved = railState();
+  for (const d of $$('#sidebar details.panel')) {
+    const id = d.id || d.className;
+    if (id in saved) d.open = !!saved[id];
+    d.addEventListener('toggle', () => saveRail({ [id]: d.open }));
+  }
+  const apply = (hidden) => {
+    document.body.classList.toggle('rail-hidden', hidden);
+    const t = $('#railToggle');
+    if (t) {
+      t.textContent = hidden ? '⟨' : '⟩';
+      t.title = hidden ? 'Show the side panels' : 'Hide the side panels';
+      t.setAttribute('aria-expanded', String(!hidden));
+    }
+  };
+  const toggle = $('#railToggle');
+  if (toggle) {
+    toggle.onclick = () => {
+      const hidden = !document.body.classList.contains('rail-hidden');
+      apply(hidden);
+      saveRail({ hidden });
+    };
+  }
+  apply(!!saved.hidden);
 }
 
 /* ==========================================================================
@@ -953,6 +1210,53 @@ async function sendAction(action) {
 }
 const send = sendAction;
 const sendPass = () => sendAction({ type: 'pass' });
+
+/**
+ * "They are aiming at something of yours."
+ *
+ * The rules already give the player priority when the bot casts at them, but the
+ * window used to pass in silence unless they were watching the stack. Now the
+ * opponent's spell or ability opens a popup that names the target and lists every
+ * legal instant-speed response the player actually has — and, just as importantly,
+ * a single button that says "let it happen".
+ */
+function maybeShowThreat() {
+  const t = S.view?.threat;
+  if (!t || S.threatSeen === t.iid) return;
+  if (S.pending?.type !== 'priority') return;
+  const responses = (S.pending.actions || []).filter((a) => a.instant && a.type !== 'pass');
+  S.threatSeen = t.iid;
+  const art = artOf(t.image);
+  const rows = responses.map((a, i) => `
+    <button class="opt respond" data-resp="${i}">
+      <span class="opt-icon">${a.type === 'cast' ? '✨' : '⚙'}</span>
+      <span class="opt-body"><strong>${esc(a.label || a.name)}</strong><span class="muted small">${a.mana ? `Costs ${esc(a.mana)}.` : 'Legal right now.'}</span></span>
+    </button>`).join('');
+  openModal(`
+    <div class="threat-head" ${art ? `style="--opt-art:url('${art}')"` : ''}>
+      <div class="threat-badge">⚠ incoming</div>
+      <h1>${esc(t.text)}</h1>
+      <p class="muted small">${esc(t.type_line || '')}${t.oracle_text ? ` — ${esc(trimOracle(t.oracle_text).split('\n')[0].slice(0, 120))}` : ''}</p>
+    </div>
+    ${responses.length
+      ? `<p class="small">You have ${responses.length} legal response${responses.length === 1 ? '' : 's'}:</p><div class="opt-list">${rows}</div>`
+      : '<p class="muted small">You have nothing that can legally respond right now — your permanents and your hand offer no instant-speed play.</p>'}
+    <div class="opt-tools">
+      <button class="ghost" id="threatAllow">${responses.length ? 'Let it resolve ▸' : 'OK ▸'}</button>
+      <button class="ghost" id="threatHide">Hide this</button>
+    </div>`);
+  $$('#modalBody .opt.respond').forEach((btn) => {
+    btn.onclick = () => {
+      const a = responses[Number(btn.dataset.resp)];
+      closeModal();
+      chooseAction(a);
+    };
+  });
+  const allow = document.querySelector('#threatAllow');
+  if (allow) allow.onclick = () => { closeModal(); sendPass(); };
+  const hide = document.querySelector('#threatHide');
+  if (hide) hide.onclick = () => closeModal();
+}
 
 function applyUpdate(data) {
   const prevTurn = S.view?.turn;
@@ -1221,6 +1525,7 @@ function wire() {
   });
   // ---------- lobby tabs: Daily / Practice / Tools ----------
   $$('.tab').forEach((t) => t.onclick = () => showPane(t.dataset.pane));
+  wireRail();
   $('#btnLeaderboard').onclick = () => showLeaderboard().catch((e) => toast(e.message));
 
   const backToLobby = async () => {
@@ -1243,6 +1548,27 @@ function wire() {
   $('#btnBackToLobby').onclick = backToLobby;
   // the same action, reachable from inside the game (the topbar is hidden there)
   $('#gameLobbyBtn').onclick = backToLobby;
+
+  // The same three destinations, reachable from inside a game: the topbar is hidden
+  // there, so the strip carries the nav (with a confirmation first — leaving the
+  // board is fine, losing it by accident is not).
+  const leaveTo = async (pane) => {
+    if (S.view && S.view.status === 'playing') {
+      const leave = await askConfirm({
+        title: 'Leave the board?',
+        body: 'Your daily run is saved exactly where it is — you can resume it from the Daily tab. A practice round is abandoned.',
+        ok: 'Leave', cancel: 'Keep playing',
+      });
+      if (!leave) return;
+    }
+    backToLobby();
+    showPane(pane);
+  };
+  const strip = { stripDaily: 'daily', stripPractice: 'practice', stripTools: 'tools' };
+  for (const [id, pane] of Object.entries(strip)) {
+    const b = $(`#${id}`);
+    if (b) b.onclick = () => leaveTo(pane).catch(() => {});
+  }
 
   // ---------- tools: upload a deck ----------
   $('#btnImport').onclick = () => submitImport().catch((e) => toast(e.message));

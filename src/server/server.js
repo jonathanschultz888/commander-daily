@@ -12,11 +12,12 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { loadAllDecks } from '../decks/index.js';
 import { createGame, reviveGame, packGame } from '../engine/game.js';
-import { runEngine, playOpening, applyPlayerAction as applyAction } from '../engine/driver.js';
+import { runEngine, playOpening, applyPlayerAction as applyAction, isInstantSpeedAction } from '../engine/driver.js';
 import { makeBot } from '../engine/bot.js';
 import { scoreSummary } from '../engine/score.js';
 import { cardScript } from '../engine/scripts.js';
-import { characteristics, isLand } from '../engine/cards.js';
+import { characteristics, isLand, countersOn, activeAnimations } from '../engine/cards.js';
+import { explainCard } from '../engine/explain.js';
 import * as store from './store.js';
 import * as corrections from '../engine/corrections.js';
 import { targetRequirements, castTargetRequirements } from '../engine/targeting.js';
@@ -140,6 +141,13 @@ function cardView(card, { hidden = false } = {}) {
     image: data.image || card.image || null, back_image: data.back_image || null,
     colors: data.colors || card.colors || [], color_identity: data.color_identity || card.color_identity || [],
     power: card.power ?? data.power ?? null, toughness: card.toughness ?? data.toughness ?? null,
+    printed: { power: card.power ?? data.power ?? null, toughness: card.toughness ?? data.toughness ?? null },
+    // The card face draws whatever it is given: a hand card is still a 5/5 with haste
+    // while it is in your hand, and the player should be able to see that without
+    // casting it first.
+    types: card.types || String(data.type_line || '').split('—')[0].trim().split(/\s+/).filter((w) => /^[A-Z]/.test(w)),
+    keywords: [...(card.keywords || data.keywords || [])],
+    keywordsPrinted: [...(card.keywords || data.keywords || [])],
     isCommander: !!card.isCommander, isToken: !!card.isToken,
     unsupported: script.unsupported.length ? script.unsupported.length : 0,
   };
@@ -148,12 +156,26 @@ function cardView(card, { hidden = false } = {}) {
 function permView(game, perm) {
   const ch = characteristics(game, perm);
   const data = cardData(perm);
+  // A land that is a creature only until end of turn, a creature wearing a +1/+1
+  // counter: both are "things printed on the card are not the whole story", and the
+  // card face has to be able to say so. `printed` is what the card actually says;
+  // `power`/`toughness` are what it is right now, layers and all.
+  const printed = { power: perm.basePower ?? null, toughness: perm.baseToughness ?? null };
+  const anims = activeAnimations(perm);
+  const pumps = perm.tempPumps.filter((x) => !x.expired);
+  const tempBonus = pumps.reduce((acc, x) => [acc[0] + x.power, acc[1] + x.toughness], [0, 0]);
   return {
     iid: perm.iid, name: perm.name, mana_cost: data.mana_cost || '', image: data.image || null,
     type_line: data.type_line || '', oracle_text: data.oracle_text || '',
     controller: perm.controller, tapped: perm.tapped, isToken: !!perm.isToken,
     isCommander: !!perm.isCommander, damage: perm.damage, counters: perm.counters,
-    power: ch.power, toughness: ch.toughness, keywords: [...ch.keywords],
+    counterList: countersOn(perm),
+    power: ch.power, toughness: ch.toughness, printed,
+    powerDelta: (ch.power - (printed.power ?? ch.power)) + 0,
+    tempBonus: tempBonus[0] || tempBonus[1] ? { power: tempBonus[0], toughness: tempBonus[1] } : null,
+    animated: anims.length ? { types: anims.flatMap((a) => a.types), untilEndOfTurn: anims.some((a) => a.untilEndOfTurn) } : null,
+    keywords: [...ch.keywords],
+    keywordsPrinted: [...(perm.keywords || [])],
     types: ch.types, subtypes: ch.subtypes, summonedThisTurn: perm.summoningSick,
     attachments: perm.attachments.map((a) => a.iid), equippedTo: perm.attachedTo?.iid || null,
     isLand: ch.types.includes('Land'),
@@ -206,6 +228,7 @@ function viewFor(game, { sinceEvent = 0, playerCounts = {} } = {}) {
     combos: game.comboHistory,
     result: game.result,
     modal: game.modal || null,
+    threat: threatFor(game),
   };
 }
 
@@ -213,9 +236,54 @@ function pendingFor(game) {
   const p = game.pending;
   if (!p) return null;
   if (p.type === 'priority') {
-    return { type: 'priority', actions: p.actions.filter((a) => !a.hidden) };
+    const actions = p.actions.filter((a) => !a.hidden).map((a) => ({
+      ...a,
+      // Can this be done while somebody else holds priority? The client needs to
+      // know: it is what separates "your move" from "you may respond", and the
+      // response popup lists exactly the instant-speed options.
+      instant: isInstantSpeedAction(game, p.player, a),
+    }));
+    return { type: 'priority', player: p.player, actions };
   }
   return p;
+}
+
+/**
+ * "The opponent is targeting something of yours."
+ *
+ * The rules already give the player a priority window when the bot casts at them
+ * (CR 117.1a: anybody may respond to a spell), but nothing *said* so: the spell
+ * appeared on the stack and the game moved on unless the player happened to be
+ * looking. This turns that window into a popup with the actual legal responses.
+ */
+function threatFor(game) {
+  const me = game.humanId;
+  if (game.humanIsBot || game.status === 'over') return null;
+  const opp = game.other(me);
+  // the most recent thing the opponent put on the stack
+  const entry = [...(game.stack || [])].reverse().find((s) => s.controller === opp);
+  if (!entry) return null;
+  const targets = (entry.targets || []).map((t) => (typeof t === 'number' ? `player:${t}` : t?.iid)).filter(Boolean);
+  const mine = targets.filter((t) => t === `player:${me}`
+    || game.battlefield.some((p) => p.iid === t && p.controller === me)
+    || game.players[me].zones.graveyard.some((c) => c.iid === t));
+  if (!mine.length) return null;
+  const data = entry.card ? cardData(entry.card) : null;
+  const name = entry.card?.name || entry.source?.name || 'An ability';
+  const who = game.players[opp].deck.name;
+  const labels = mine.map((t) => (t === `player:${me}` ? 'you'
+    : (game.battlefield.find((p) => p.iid === t)?.name || 'your permanent')));
+  return {
+    iid: entry.iid,
+    name,
+    kind: entry.kind,
+    type_line: data?.type_line || 'Ability',
+    oracle_text: data?.oracle_text || entry.spec?.raw || '',
+    image: data?.image || null,
+    from: who,
+    targets: mine.map((t, i) => ({ ref: t, name: labels[i] })),
+    text: `${who} ${entry.kind === 'spell' ? 'casts' : 'activates'} ${name}, targeting ${labels.join(' and ')}.`,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -536,6 +604,48 @@ const server = http.createServer(async (req, res) => {
       store.removeCommunityDeck(id);
       console.log(`[community] − ${existing.name} removed by the operator`);
       return json(res, 200, { ok: true, removed: id });
+    }
+
+    /* ---------------- what does this card do? ---------------- */
+
+    // "Check this card" — the on-the-fly review. It answers, from the engine's own
+    // script, what it is going to do with the card: the choices it will ask for,
+    // what each ability and trigger does in plain words, and — the honest part —
+    // which clauses it could not read. POSTing `recheck: true` is the same analysis
+    // run again from scratch, which is what the player presses when a card has just
+    // surprised them: it re-derives the script and reports any correction now in
+    // force, rather than trusting a cached answer.
+    if ((url.pathname === '/api/card-check' || url.pathname === '/api/card-check/recheck')
+        && (req.method === 'POST' || req.method === 'GET')) {
+      let body = {};
+      if (req.method === 'POST') body = await readBody(req);
+      else body = { name: url.searchParams.get('name') || '' };
+      const name = String(body.name || '').trim().slice(0, 80);
+      const card = oracle[name.toLowerCase()];
+      if (!card) return json(res, 404, { error: `"${name || 'that card'}" is not one of the ${Object.keys(oracle).length} cards in the pool.` });
+      const script = cardScript(card);
+      const automation = automationOf(card);
+      const probe = {
+        requiredTargets: targetRequirements(script),
+        castRequiredTargets: castTargetRequirements(script),
+        statics: script.statics || [],
+        automation: automation.status,
+      };
+      const analysis = corrections.analyseCard(card, probe, '');
+      const explain = explainCard(card, script, {
+        status: automation.status,
+        targetSpec: probe.castRequiredTargets[0] || probe.requiredTargets[0] || null,
+      });
+      const fixes = store.correctionFor(card.name);
+      return json(res, 200, {
+        ...explain,
+        checkedAt: new Date().toISOString(),
+        rechecked: url.pathname.endsWith('/recheck') || !!body.recheck,
+        coverage: automation.status,
+        findings: analysis.findings,
+        verdict: analysis.verdict,
+        corrections: fixes ? { targets: fixes.targets || [], note: fixes.note || null, kind: fixes.kind || null } : null,
+      });
     }
 
     /* ---------------- report a card ---------------- */

@@ -11,7 +11,7 @@
 
 export const BASIC_LANDS = ['Plains', 'Island', 'Swamp', 'Mountain', 'Forest'];
 
-const parseTypes = (typeLine) => {
+export const parseTypes = (typeLine) => {
   const [left, right] = typeLine.split(/—|–/).map((s) => (s || '').trim());
   const words = left.split(/\s+/);
   const supertypes = words.filter((w) => ['Basic', 'Legendary', 'Snow', 'World', 'Kindred', 'Tribal', 'Ongoing'].includes(w));
@@ -101,6 +101,8 @@ export function makeCardInstance(card, { owner, controller, zone, isCommander = 
     keywords: new Set(card.keywords || []),
     // continuous-effect bookkeeping
     tempPumps: [],            // { power, toughness, untilEndOfTurn, source }
+    animations: [],           // { power, toughness, types, subtypes, keywords, untilEndOfTurn }
+    tempCounters: [],         // { type, n, untilEndOfTurn } — counters that really do expire
     staticMods: [],           // { power, toughness, setBase?, source, condition }
     setBase: null,            // { power, toughness } from layer 7a
     setPT: null,              // from layer 7b
@@ -158,12 +160,42 @@ export const isLegendary = (c) => c.supertypes.includes('Legendary');
 /* ------------------------------------------------------------------ */
 
 export function countersPower(perm) {
-  return (perm.counters['+1/+1'] || 0) - (perm.counters['-1/-1'] || 0);
+  let n = (perm.counters['+1/+1'] || 0) - (perm.counters['-1/-1'] || 0);
+  for (const c of perm.tempCounters || []) {
+    if (c.type === '+1/+1') n += c.n;
+    if (c.type === '-1/-1') n -= c.n;
+  }
+  return n;
+}
+
+/**
+ * Every counter on a permanent, permanent ones and temporary ones alike, in the
+ * shape the client draws them: { type, n, temporary }. A "+1/+1 until end of turn"
+ * effect is a *pump*, not a counter (CR 122 says counters stay until something
+ * removes them), but a few effects really do place counters that expire — and the
+ * player must be able to see which is which on the card.
+ */
+export function countersOn(perm) {
+  const out = [];
+  for (const [type, n] of Object.entries(perm.counters || {})) if (n) out.push({ type, n, temporary: false });
+  for (const c of perm.tempCounters || []) if (c.n) {
+    const found = out.find((o) => o.type === c.type && o.temporary);
+    if (found) found.n += c.n; else out.push({ type: c.type, n: c.n, temporary: true });
+  }
+  return out.sort((a, b) => (a.temporary === b.temporary ? a.type.localeCompare(b.type) : (a.temporary ? 1 : -1)));
+}
+
+/** The animations currently in force (a manland waking up, "becomes a 3/3 until EOT"). */
+export function activeAnimations(perm) {
+  return (perm.animations || []).filter((a) => !a.expired);
 }
 
 /** Layer 6: continuous abilities that add keywords. */
 export function effectiveKeywords(game, perm) {
   const set = new Set(perm.keywords);
+  // An animation grants keywords too ("becomes a 3/3 Elemental with haste"), and they
+  // go away with the turn like everything else about it.
+  for (const a of activeAnimations(perm)) (a.keywords || []).forEach((k) => set.add(k));
   for (const g of perm.keywordGrants) {
     if (g.expired) continue;
     g.keywords.forEach((k) => set.add(k));
@@ -239,10 +271,15 @@ function computeCharacteristics(game, perm) {
   let types = [...perm.types];
   let subtypes = [...perm.subtypes];
   let keywords = new Set(perm.keywords);
+  const anims = activeAnimations(perm);
 
   // Layer 4: type-changing effects
   const mods = gameStaticMods(game);
   const applies = (m) => (typeof m.applies === 'function' ? m.applies(perm) : true);
+  for (const a of anims) {
+    if (a.types) types = [...new Set([...types, ...a.types])];
+    if (a.subtypes) subtypes = [...new Set([...subtypes, ...a.subtypes])];
+  }
   for (const m of mods) {
     if (!applies(m)) continue;
     if (m.addTypes) types = [...new Set([...types, ...m.addTypes])];
@@ -250,6 +287,7 @@ function computeCharacteristics(game, perm) {
     if (m.removeTypes) types = types.filter((t) => !m.removeTypes.includes(t));
   }
   // Layer 5-6: colour/ability changes (keyword grants handled in effectiveKeywords)
+  for (const a of anims) (a.keywords || []).forEach((k) => keywords.add(k));
   for (const m of mods) {
     if (!applies(m)) continue;
     if (m.keywords) m.keywords.forEach((k) => keywords.add(k));
@@ -258,6 +296,9 @@ function computeCharacteristics(game, perm) {
   // Layer 7a: effects that set base P/T ("becomes a 5/5")
   if (perm.setBase) { baseP = perm.setBase.power; baseT = perm.setBase.toughness; }
   for (const m of mods) if (applies(m) && m.setBase) { baseP = m.setBase.power; baseT = m.setBase.toughness; }
+  // An animation ("Until end of turn, this land becomes a 3/3 Elemental") sets the
+  // base P/T too — so a +1/+1 counter on an animated manland still counts on top.
+  for (const a of anims) if (a.power != null) { baseP = a.power; baseT = a.toughness; }
 
   // Layer 7b: effects that set P/T to a specific value
   let power = baseP, toughness = baseT;

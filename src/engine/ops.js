@@ -259,11 +259,41 @@ function dealToPlaneswalker(g, pw, n, ctx) {
   g.checkStateBased();
 }
 
-export function addCounters(g, perm, type, n, ctx = {}) {
+/**
+ * Put counters on a permanent.
+ *
+ * `duration` is normally omitted: a counter stays until something removes it
+ * (CR 122.1). A handful of effects really do place counters that expire at end of
+ * turn, and those are tracked separately so the display can tell the player which
+ * counters are permanent and which are about to disappear — and so the cleanup step
+ * removes exactly those. A "+1/+1 until end of turn" is NOT a counter; that is a
+ * pump effect (`pump()`) and never reaches here.
+ */
+export function addCounters(g, perm, type, n, ctx = {}, { duration = 'permanent' } = {}) {
   if (!perm) return;
-  perm.counters[type] = (perm.counters[type] || 0) + n;
-  if (type === 'loyalty' && perm.loyalty !== null && perm.counters.loyalty === undefined) perm.counters.loyalty = n;
-  g.emit({ type: 'counters', target: perm.iid, counterType: type, amount: n, ctx });
+  if (duration === 'eot') {
+    perm.tempCounters.push({ type, n, untilEndOfTurn: true, source: ctx.source?.iid || null });
+  } else {
+    perm.counters[type] = (perm.counters[type] || 0) + n;
+    if (type === 'loyalty' && perm.loyalty !== null && perm.counters.loyalty === undefined) perm.counters.loyalty = n;
+  }
+  g.emit({ type: 'counters', target: perm.iid, counterType: type, amount: n, temporary: duration === 'eot', ctx });
+}
+
+/**
+ * "Until end of turn, target land becomes a 3/3 Elemental creature" — the animation
+ * is a layer-4/7a effect that expires with the turn, not a counter and not a pump.
+ */
+export function animate(g, perm, spec, ctx = {}, duration = 'eot') {
+  if (!perm) return;
+  const anim = {
+    power: spec.power ?? null, toughness: spec.toughness ?? null,
+    types: spec.types || [], subtypes: spec.subtypes || [], keywords: spec.keywords || [],
+    source: ctx.source?.iid || null, untilEndOfTurn: duration === 'eot', expired: false,
+  };
+  perm.animations.push(anim);
+  g.emit({ type: 'animated', target: perm.iid, spec: { power: anim.power, toughness: anim.toughness, types: anim.types }, ctx });
+  g.recomputeStatics?.();
 }
 
 export function destroy(g, perm, ctx = {}) {
@@ -359,6 +389,8 @@ export function removeFromBattlefield(g, perm) {
   perm.counters = {};
   perm.summoningSick = true;
   perm.tempPumps = [];
+  perm.tempCounters = [];
+  perm.animations = [];
   perm.staticMods = [];
   perm.keywordGrants = [];
   perm.keywordLoss = [];
@@ -590,8 +622,9 @@ function runStep(g, ctx, step) {
     case 'bounceAll': for (const p of allMatching(g, step.filter, ctx)) bounce(g, p, ctx); return;
     case 'gainLife': gainLife(g, step.who === 'opponent' ? otherPlayer(g, me) : me, step.n || 0, ctx); return;
     case 'loseLife': loseLife(g, step.who === 'opponent' ? otherPlayer(g, me) : me, step.n || 0, ctx); return;
-    case 'counter': for (const t of targetsOf(g, ctx, step)) addCounters(g, findPermanent(g, t?.iid ?? t), step.counterType || '+1/+1', step.n || 1, ctx); return;
-    case 'counterAll': for (const p of allMatching(g, step.filter, ctx)) addCounters(g, p, step.counterType || '+1/+1', step.n || 1, ctx); return;
+    case 'counter': for (const t of targetsOf(g, ctx, step)) addCounters(g, findPermanent(g, t?.iid ?? t), step.counterType || '+1/+1', step.n || 1, ctx, { duration: step.duration || 'permanent' }); return;
+    case 'counterAll': for (const p of allMatching(g, step.filter, ctx)) addCounters(g, p, step.counterType || '+1/+1', step.n || 1, ctx, { duration: step.duration || 'permanent' }); return;
+    case 'animate': for (const t of targetsOf(g, ctx, step)) animate(g, findPermanent(g, t?.iid ?? t), step, ctx, step.duration || 'eot'); return;
     case 'token': {
       const defs = Array.isArray(step.token) ? step.token : [step.token];
       for (const d of defs) createTokens(g, step.who === 'opponent' ? otherPlayer(g, me) : me, d, step.n || 1, ctx);

@@ -14,10 +14,10 @@ import { loadAllDecks, profileDeck, COMBO_REGISTRY, GAME_CHANGERS } from '../src
 import * as store from '../src/server/store.js';
 import { SEED_DECKS } from '../src/decks/lists.js';
 import { createGame, reviveGame, packGame } from '../src/engine/game.js';
-import { bounce, destroy, gainLife } from '../src/engine/ops.js';
+import { bounce, destroy, gainLife, animate, pump } from '../src/engine/ops.js';
 import { runEngine, combatDamage, executeAction, playOpening, applyPlayerAction, applyAttackers } from '../src/engine/driver.js';
 import { makeBot } from '../src/engine/bot.js';
-import { makeCardInstance, characteristics, makeTokenInstance, hasKeyword } from '../src/engine/cards.js';
+import { makeCardInstance, characteristics, makeTokenInstance, hasKeyword, countersOn, activeAnimations } from '../src/engine/cards.js';
 import { cardScript } from '../src/engine/scripts.js';
 import { tokenDef, damage, putPermanent, addCounters, findPermanent } from '../src/engine/ops.js';
 import { oracle } from '../src/decks/index.js';
@@ -1145,4 +1145,62 @@ test('Viscera Seer eats itself rather than nothing — but "sacrifice another" n
   assert.equal(yawgActs.length, 1, 'Yahenni can use the Seer as its "another creature"');
   assert.ok(!yawgActs[0].legalSacrifices.includes(yawg.iid), 'but never itself');
   assert.ok(yawgActs[0].legalSacrifices.includes(seer.iid), 'and the Seer is a legal sacrifice for it');
+});
+
+test('a manland really becomes a creature, and stops being one at end of turn', () => {
+  // Raging Ravine, Shambling Vent, Needle Spires, Creeping Tar Pit and Skarrg
+  // Guildmage all animate lands — and before this they had no ability at all, so the
+  // land tapped for mana and nothing else, forever. The animation is a layer-4/7a
+  // effect that expires with the turn; it is not a counter and not a pump.
+  const g = soloGame('squirrel-swarm', 'sea-monsters');
+  const ravine = putOnBattlefield(g, 'Raging Ravine', 0);
+  assert.equal(characteristics(g, ravine).isCreature, false, 'a manland is a land to begin with');
+  animate(g, ravine, { power: 3, toughness: 3, types: ['Creature'], subtypes: ['Elemental'], keywords: ['Haste'] }, { source: ravine });
+  const awake = characteristics(g, ravine);
+  assert.ok(awake.isCreature, 'while animated it is a creature');
+  assert.equal(`${awake.power}/${awake.toughness}`, '3/3');
+  assert.ok(awake.keywords.has('Haste'), 'and it has the keyword the animation grants');
+  assert.equal(activeAnimations(ravine).length, 1, 'the animation is on the permanent, so the client can show it');
+  addCounters(g, ravine, '+1/+1', 1, {});
+  assert.equal(`${characteristics(g, ravine).power}/${characteristics(g, ravine).toughness}`, '4/4',
+    'a counter still lands on top of the animation');
+  g.clearEndOfTurnEffects();
+  assert.equal(characteristics(g, ravine).isCreature, false, 'and at end of turn it is a plain land again');
+  assert.deepEqual(countersOn(ravine), [{ type: '+1/+1', n: 1, temporary: false }], 'while the counter, a real counter, stays');
+});
+
+test('counters know whether they expire: "put a +1/+1 counter" vs "until end of turn"', () => {
+  const g = soloGame('squirrel-swarm', 'sea-monsters');
+  const bear = putOnBattlefield(g, 'Elvish Visionary', 0);
+  addCounters(g, bear, '+1/+1', 2, {});                          // "put two +1/+1 counters on it"
+  addCounters(g, bear, '+1/+1', 1, {}, { duration: 'eot' });     // a counter that really does expire
+  assert.equal(`${characteristics(g, bear).power}/${characteristics(g, bear).toughness}`, '4/4', 'both count while they last');
+  assert.deepEqual(countersOn(bear), [
+    { type: '+1/+1', n: 2, temporary: false },
+    { type: '+1/+1', n: 1, temporary: true },
+  ], 'and the client can tell them apart, which is the whole point');
+  g.clearEndOfTurnEffects();
+  assert.equal(`${characteristics(g, bear).power}/${characteristics(g, bear).toughness}`, '3/3', 'the temporary one is gone');
+  assert.deepEqual(countersOn(bear), [{ type: '+1/+1', n: 2, temporary: false }], 'the permanent ones are not');
+});
+
+test('a pump is not a counter — the creature shrinks back and nothing is left on it', () => {
+  const g = soloGame('squirrel-swarm', 'sea-monsters');
+  const bear = putOnBattlefield(g, 'Elvish Visionary', 0);
+  pump(g, bear, 3, 3, { source: null });
+  assert.equal(`${characteristics(g, bear).power}/${characteristics(g, bear).toughness}`, '4/4');
+  assert.deepEqual(countersOn(bear), [], 'a +3/+3 until end of turn puts no counter on the card');
+  g.clearEndOfTurnEffects();
+  assert.equal(`${characteristics(g, bear).power}/${characteristics(g, bear).toughness}`, '1/1', 'and it wears off at end of turn');
+});
+
+test('every card in the pool that animates a land can actually do it', () => {
+  const missing = [];
+  for (const card of Object.values(oracle)) {
+    if (!/becomes a[n]? .*creature|becomes a .*creature/i.test(card.oracle_text || '')) continue;
+    const script = cardScript(card);
+    const hasAbility = (script.abilities || []).some((a) => (a.steps || []).some((s) => s.op === 'animate'));
+    if (!hasAbility) missing.push(card.name);
+  }
+  assert.deepEqual(missing, [], `these cards say they animate something but the engine cannot do it:\n  ${missing.join('\n  ')}`);
 });

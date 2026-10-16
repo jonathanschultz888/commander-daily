@@ -174,12 +174,17 @@ export const HAND_SCRIPTS = {
   'kher keep': { mana: [{ colors: ['C'], amount: 1 }], abilities: [{ costs: { tap: true, mana: { generic: 1 } }, steps: [{ op: 'token', token: tokenDef('Kobold token', 'Token Creature — Kobold', 0, 1, { colors: ['R'] }), n: 1 }], label: 'Create a 0/1 Kobold' }] },
   'great furnace': { mana: [{ colors: ['R'], amount: 1 }] },
   'darksteel citadel': { mana: [{ colors: ['C'], amount: 1 }] },
-  'creeping tar pit': { entersTapped: true, mana: [{ colors: ['U', 'B'], amount: 1 }] },
-  'raging ravine': { entersTapped: true, mana: [{ colors: ['R', 'G'], amount: 1 }] },
+  'creeping tar pit': { entersTapped: true, mana: [{ colors: ['U', 'B'], amount: 1 }], abilities: [{ costs: { tap: true, mana: { generic: 1, colors: { U: 1, B: 1 } } }, steps: [{ op: 'animate', target: 'self', power: 3, toughness: 2, types: ['Creature'], subtypes: ['Elemental'], keywords: ['Unblockable'] }], label: 'Animate: 3/2 Elemental that cannot be blocked until end of turn' }] },
+  'raging ravine': { entersTapped: true, mana: [{ colors: ['R', 'G'], amount: 1 }], abilities: [{ costs: { tap: true, mana: { generic: 2, colors: { R: 1, G: 1 } } }, steps: [{ op: 'animate', target: 'self', power: 3, toughness: 3, types: ['Creature'], subtypes: ['Elemental'], keywords: ['Haste'] }], label: 'Animate: 3/3 Elemental with haste until end of turn' }] },
+  'skarrg guildmage': {
+    abilities: [
+      { costs: { tap: true, mana: { generic: 1, colors: { R: 1, G: 1 } } }, target: 'landYouControl', steps: [{ op: 'animate', target: 'chosen', power: 4, toughness: 4, types: ['Creature'], subtypes: ['Elemental'] }], label: 'Animate: target land becomes a 4/4 Elemental until end of turn' },
+    ],
+  },
   'kessig wolf run': { mana: [{ colors: ['C'], amount: 1 }], abilities: [{ costs: { tap: true, mana: { generic: 1, colors: { R: 1 } } }, target: 'creature', steps: [{ op: 'pump', target: 'chosen', power: 1, toughness: 0 }, { op: 'grant', target: 'chosen', keywords: ['Trample'] }], label: '{X}{R}{G}, {T}: pump and trample' }] },
-  'shambling vent': { entersTapped: true, mana: [{ colors: ['W', 'B'], amount: 1 }] },
+  'shambling vent': { entersTapped: true, mana: [{ colors: ['W', 'B'], amount: 1 }], abilities: [{ costs: { tap: true, mana: { generic: 1, colors: { W: 1, B: 1 } } }, steps: [{ op: 'animate', target: 'self', power: 2, toughness: 3, types: ['Creature'], subtypes: ['Elemental'], keywords: ['Lifelink'] }], label: 'Animate: 2/3 Elemental with lifelink until end of turn' }] },
   'slayers\' stronghold': { mana: [{ colors: ['C'], amount: 1 }], abilities: [{ costs: { tap: true, mana: { generic: 2, colors: { R: 1 } } }, target: 'creatureYouControl', steps: [{ op: 'pump', target: 'chosen', power: 1, toughness: 0 }, { op: 'grant', target: 'chosen', keywords: ['Haste'] }], label: 'Pump + haste' }] },
-  'needle spires': { entersTapped: true, mana: [{ colors: ['R', 'W'], amount: 1 }] },
+  'needle spires': { entersTapped: true, mana: [{ colors: ['R', 'W'], amount: 1 }], abilities: [{ costs: { tap: true, mana: { generic: 2, colors: { R: 1, W: 1 } } }, steps: [{ op: 'animate', target: 'self', power: 2, toughness: 1, types: ['Creature'], subtypes: ['Elemental'], keywords: ['Double strike'] }], label: 'Animate: 2/1 Elemental with double strike until end of turn' }] },
 
   /* ---------------- ramp ---------------- */
   'llanowar elves': { mana: [{ colors: ['G'], amount: 1, tap: true }] },

@@ -71,7 +71,7 @@ export function runEngine(game, opts = {}) {
  * an instant, a flash card, or any activated ability not restricted to sorcery
  * timing.) Mana abilities never appear in legalActions — they are automatic.
  */
-function isInstantSpeedAction(game, pid, a) {
+export function isInstantSpeedAction(game, pid, a) {
   if (a.type === 'activate') {
     // Activated abilities are instant-speed unless the card says otherwise; none
     // of the pool's abilities carry a sorcery-timing restriction.

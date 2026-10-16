@@ -196,7 +196,7 @@ button { font-family: inherit; cursor: pointer; }
 .hand-row { display: flex; gap: .45rem; overflow-x: auto; padding: .4rem .1rem; scrollbar-width: thin; }
 .mana-row { font-size: .78rem; color: var(--muted); gap: .3rem; }
 .mana-pip { background: var(--bg-3); border: 1px solid var(--line); border-radius: 999px; padding: .1rem .45rem; }
-.middle { min-height: 40px; }
+.middle { min-height: 40px; min-width: 0; }
 .stack-zone { display: flex; flex-direction: column; gap: .3rem; align-items: center; }
 .stack-item {
   display: flex; align-items: center; gap: .5rem; font-size: .82rem;
@@ -205,7 +205,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 @keyframes stackIn { from { opacity: 0; transform: translateY(10px) scale(.96); } }
 .prompt-bar {
-  display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+  display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; min-width: 0;
   background: linear-gradient(90deg, var(--accent-soft), color-mix(in srgb, var(--panel) 92%, transparent));
   border: 1px solid var(--accent); border-radius: var(--radius); padding: .5rem .6rem; font-size: .88rem;
   position: sticky; bottom: .5rem; z-index: 40; backdrop-filter: blur(8px);
@@ -218,11 +218,14 @@ button { font-family: inherit; cursor: pointer; }
   font-size: .68rem; text-transform: uppercase; letter-spacing: .1em; font-weight: 800;
   color: var(--accent); white-space: nowrap; padding-right: .2rem; border-right: 1px solid var(--line);
 }
+/* One rule, one layout: the chips scroll sideways if they must, and wrap only when
+   there is room for a second line. (There used to be two `display: flex` blocks here
+   with conflicting overflow rules, which is how a chip ended up behind the pass
+   button on a phone.) */
 .prompt-bar .dock-actions {
-  display: flex; align-items: center; gap: .4rem; min-width: 0;
-  flex-wrap: wrap; max-height: 4.6rem; overflow-y: auto; overflow-x: hidden;
-  display: flex; gap: .35rem; align-items: center; flex: 1; min-width: 0;
-  overflow-x: auto; padding-bottom: .1rem; scrollbar-width: thin;
+  display: flex; align-items: center; gap: .35rem;
+  flex: 1 1 12ch; min-width: 0; max-height: 4.6rem;
+  flex-wrap: wrap; overflow-y: auto; overflow-x: hidden; padding-bottom: .1rem;
 }
 .prompt-bar .dock-chip-label { flex: 1 1 auto; min-width: 0; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dock-chip {
@@ -244,9 +247,21 @@ button { font-family: inherit; cursor: pointer; }
 .prompt-bar .dock-chip .tag.target { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
 .prompt-bar .dock-pass { flex: 0 0 auto; }
 @media (max-width: 900px) {
-  /* the sidebar collapses into a bottom sheet here: keep the dock above it */
-  .prompt-bar { bottom: 3.2rem; }
+  /* The dock stacks on a narrow screen: the options take the full width on their own
+     line (and scroll sideways if the row is long), and the buttons sit under them, so
+     nothing can ever end up underneath the pass button. */
+  .prompt-bar {
+    bottom: 3.2rem; flex-wrap: wrap; row-gap: .35rem; padding: .45rem;
+  }
+  .prompt-bar .dock-actions {
+    order: 1; flex: 1 1 100%; flex-wrap: nowrap; overflow-x: auto; max-height: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .prompt-bar .dock-chip { flex: 0 0 auto; max-width: 78vw; }
+  .prompt-bar .dock-pass { order: 3; flex: 1 1 auto; }
   .prompt-bar .dock-title { display: none; }
+  .prompt-bar > .grow { order: 2; flex: 1 1 100%; min-width: 0; }
+  .prompt-bar > button:not(.dock-pass):not(.dock-chip) { order: 2; }
 }
 /* Give the boards room so the dock never covers the last row of cards. */
 .board-wrap { padding-bottom: 3.6rem; }
@@ -565,6 +580,7 @@ button { font-family: inherit; cursor: pointer; }
 
 /* ---------------- the hand: unmistakably not the battlefield ---------------- */
 .hand-panel {
+  min-width: 0;
   margin-top: .5rem;
   padding: .5rem .65rem .7rem;
   border-radius: var(--radius);
@@ -725,6 +741,11 @@ body.game-active .topbar { display: none; }
      spills past the edge of the table. */
   isolation: isolate; overflow: hidden;
   display: grid;
+  /* An explicit single column: with only rows declared, the implicit column is
+     `auto` (= max-content), so a wide board was laid out 600px wide on a 390px
+     screen and then clipped by `overflow: hidden` — nothing scrolled, and the
+     right-hand lane was simply unreachable. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 0.92fr) auto minmax(0, 1.22fr);
   gap: .3rem; min-height: 0; height: 100%; padding-bottom: 0;
 }
@@ -738,7 +759,11 @@ body.game-active .topbar { display: none; }
 .side.opponent .zone-cards { order: 1; }
 .side.opponent { border-top: 0; }
 .side.me { border-bottom: 0; }
-.side .board { flex: 1; min-height: 0; }
+/* min-width: 0 here is the one that actually keeps a phone on one screen: a flex
+   item's automatic minimum size is its content, so without it the three lanes'
+   min-content widths added up to 617px inside a 390px screen and the creature lane
+   was simply cut off at the right edge (invisible, because the table clips). */
+.side .board { flex: 1; min-width: 0; min-height: 0; }
 
 /* --- lanes: three side by side per player, so a whole board fits without scrolling --- */
 .board {
@@ -778,7 +803,7 @@ body.game-active .topbar { display: none; }
 /* --- the two player bars, tightened into single lines --- */
 .side-head {
   display: flex; align-items: center; justify-content: space-between; gap: .5rem;
-  padding: .1rem .2rem .25rem;
+  padding: .1rem .2rem .25rem; flex-wrap: wrap; min-width: 0;
 }
 .player-chip { gap: .45rem; }
 .player-chip strong { font-size: .88rem; line-height: 1.1; }
@@ -801,7 +826,7 @@ body.game-active .topbar { display: none; }
 
 /* --- the middle: combat line, stack, and the dock you never have to hunt for --- */
 .middle { display: flex; flex-direction: column; gap: .25rem; min-height: 0; padding: 0 .2rem; }
-.stack-zone { gap: .2rem; max-height: 22vh; overflow-y: auto; }
+.stack-zone { gap: .2rem; max-height: 22vh; overflow-y: auto; min-width: 0; }
 .stack-item { padding: .18rem .65rem; font-size: .76rem; background: color-mix(in srgb, var(--panel) 80%, transparent); }
 .combat-line { margin: 0; font-size: .55rem; }
 
@@ -893,11 +918,15 @@ body.game-active .topbar { display: none; }
   gap: .35rem; position: relative; top: auto; z-index: 6;  /* in flow; a card mid-animation plays *under* the rail */
   height: 100%; min-height: 0; overflow: hidden;
 }
-.sidebar > * { min-height: 0; }
+.sidebar > * { min-height: 0; min-width: 0; overflow-x: hidden; }
 .sidebar .panel { padding: .45rem .55rem; border-radius: 14px; background: color-mix(in srgb, var(--panel) 84%, transparent); }
 .sidebar h2 { margin-bottom: .3rem; font-size: .82rem; }
 .log-panel { display: flex; flex-direction: column; }
-.log { max-height: none; flex: 1; min-height: 0; overflow-y: auto; font-size: .74rem; }
+.log {
+  max-height: none; flex: 1; min-height: 0; overflow-y: auto; font-size: .74rem;
+  overflow-wrap: anywhere; word-break: break-word; min-width: 0;
+}
+.log > div { overflow-wrap: anywhere; }
 .points-total { font-size: 1.9rem; line-height: 1; }
 .points-list { max-height: 5.4rem; overflow-y: auto; }
 .match-meta { gap: .5rem; }
@@ -1069,3 +1098,152 @@ h1, h2 { font-weight: 800; }
   background: rgba(0,0,0,.28); border: 1px solid var(--line); font-size: .82rem; color: #cfdcea;
 }
 .opt-tools { margin-top: .5rem; }
+
+/* ==========================================================================
+   ROUND 4 — less clutter, more card
+   --------------------------------------------------------------------------
+   Four things the player asked for in one place: the side blocks fold away and
+   stay folded; the three destinations are real buttons at the top instead of
+   underlined tabs; a card states its own power/toughness, keywords and counters;
+   and a phone gets the same board with the furniture behind a toggle.
+   ========================================================================== */
+
+/* ---- the top buttons ---- */
+.mode-tabs { gap: .4rem; padding: .3rem; }
+.mode-tabs .tab {
+  display: flex; align-items: center; gap: .5rem; text-align: left;
+  border-radius: 14px; padding: .35rem .7rem; border: 1px solid transparent;
+}
+.mode-tabs .tab .tab-text { display: flex; flex-direction: column; line-height: 1.05; }
+.mode-tabs .tab .tab-text strong { font-size: .86rem; }
+.mode-tabs .tab .tab-text small { font-size: .66rem; color: var(--muted); font-weight: 500; }
+.mode-tabs .tab:hover { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.mode-tabs .tab.active { color: #0b0f14; }
+.mode-tabs .tab.active .tab-text small { color: rgba(11, 15, 20, .7); }
+
+/* ---- the rail folds ---- */
+.sidebar details.panel { padding: 0; overflow: hidden; }
+.sidebar details.panel > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: .45rem;
+  padding: .45rem .55rem; margin: 0;
+}
+.sidebar details.panel > summary::-webkit-details-marker { display: none; }
+.sidebar details.panel > summary h2 { margin: 0; font-size: .82rem; }
+.sidebar details.panel > summary:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.sidebar details.panel .summary-chev { margin-left: auto; color: var(--muted); transition: transform .15s ease; font-size: .8rem; }
+.sidebar details.panel[open] .summary-chev { transform: rotate(180deg); }
+.sidebar details.panel .summary-hint { color: var(--muted); font-size: .7rem; }
+.sidebar details.panel .panel-body { padding: 0 .55rem .55rem; }
+.points-panel summary .points-total.inline { margin-left: auto; font-size: 1.1rem; color: var(--accent); }
+.sidebar details.panel:not([open]) .points-total.inline { display: inline; }
+.sidebar details.panel[open] .points-total.inline { display: none; }
+
+/* the rail hidden entirely: the board gets the whole width */
+body.rail-hidden .game { grid-template-columns: minmax(0, 1fr) 0; }
+body.rail-hidden .sidebar { display: none; }
+.rail-toggle { padding: .3rem .55rem; }
+
+/* ---- the in-game nav ---- */
+.strip-nav { display: flex; align-items: center; gap: .2rem; }
+.strip-btn {
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+  border-radius: 10px; padding: .28rem .45rem; font: inherit; font-size: .74rem;
+  display: flex; align-items: center; gap: .25rem; white-space: nowrap;
+}
+.strip-btn:hover { border-color: var(--accent); color: var(--text); }
+.strip-btn #gameLobbyBtn, .strip-nav #gameLobbyBtn { font-size: .74rem; }
+
+/* ---- the card states its own numbers ---- */
+.card .kws { position: relative; display: flex; flex-wrap: wrap; gap: .1rem; margin: .12rem 0 0; }
+.card .kw {
+  font-size: .48rem; font-weight: 800; letter-spacing: .01em;
+  background: rgba(9, 14, 20, .78); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  color: #e7f0fa; border-radius: 4px; padding: 0 .2rem; text-transform: uppercase;
+}
+.card .kw.gained { border-color: var(--good); box-shadow: 0 0 6px #4ade8055; }
+.card .kw.more { border-color: var(--line); color: var(--muted); }
+.card .pips { position: absolute; left: .3rem; bottom: .28rem; display: flex; gap: .18rem; flex-wrap: wrap; max-width: 60%; }
+.card .counter-pip {
+  font-size: .55rem; font-weight: 800; background: #0b1219; color: var(--good);
+  border: 1px solid color-mix(in srgb, var(--good) 60%, transparent);
+  border-radius: 999px; padding: .02rem .3rem;
+}
+.card .counter-pip.minus { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 60%, transparent); }
+.card .counter-pip.temp { border-style: dashed; color: var(--warn); border-color: color-mix(in srgb, var(--warn) 70%, transparent); }
+.card .pt.boosted { box-shadow: 0 0 0 1px var(--good), 0 0 10px #4ade8055; color: #d8ffe2; }
+.card .anim-pip {
+  position: absolute; left: .3rem; top: 1.7rem;
+  font-size: .5rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em;
+  background: rgba(9, 14, 20, .82); color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  border-radius: 5px; padding: 0 .25rem;
+}
+/* a creature that can block right now, and the half of a pair that is picked */
+.card.blockable { box-shadow: 0 0 0 2px #7cc4ff88, 0 6px 16px rgba(0,0,0,.5); }
+.card.block-pick { box-shadow: 0 0 0 3px var(--accent), 0 8px 20px rgba(0,0,0,.55); transform: translateY(-4px); }
+.pair-chip {
+  display: inline-flex; align-items: center; gap: .3rem;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 999px; padding: .28rem .6rem; font: inherit; font-size: .76rem; font-weight: 600;
+}
+.pair-chip .x { color: var(--bad); }
+.pair-chip:hover { border-color: var(--bad); }
+
+/* ---- the review sheet, the check list, the threat popup ---- */
+.check-block { margin: .5rem 0; }
+.check-block h3 { margin: 0 0 .2rem; font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.check-block ul { margin: 0; padding-left: 1.05rem; font-size: .86rem; line-height: 1.45; }
+.check-block li { margin: .12rem 0; }
+.check-read { margin-top: .6rem; }
+.threat-head { position: relative; padding: .7rem; border-radius: 14px; margin: -.2rem -.2rem .6rem; overflow: hidden;
+  background-image: var(--opt-art, none); background-size: 200%; background-position: 50% 26%;
+  border: 1px solid color-mix(in srgb, var(--bad) 55%, var(--line)); }
+.threat-head::before { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(20,6,6,.95), rgba(20,6,6,.72)); }
+.threat-head > * { position: relative; }
+.threat-badge {
+  display: inline-block; font-size: .6rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase;
+  background: var(--bad); color: #140606; border-radius: 999px; padding: .1rem .45rem; margin-bottom: .3rem;
+}
+.threat-head h1 { font-size: 1.02rem; margin: 0 0 .15rem; }
+.modal .opt.respond { border-left-color: var(--good); }
+
+/* ==========================================================================
+   PHONE — the same game, less furniture
+   ========================================================================== */
+@media (max-width: 720px) {
+  .topbar { padding: .4rem .5rem; gap: .4rem; }
+  .brand-text span { display: none; }
+  .mode-tabs { flex: 1; justify-content: space-between; }
+  .mode-tabs .tab { flex: 1; padding: .3rem .35rem; justify-content: center; }
+  .mode-tabs .tab .tab-text small { display: none; }
+  .mode-tabs .tab .tab-text strong { font-size: .74rem; }
+  .reset-clock { display: none; }
+}
+
+/* the strip's icon buttons: a 16px glyph from the page's own SVG, filled like a tab */
+.strip-btn svg { width: 15px; height: 15px; fill: currentColor; flex: 0 0 auto; }
+.strip-btn:hover { color: var(--text); }
+@media (max-width: 720px) {
+  #sidebar .game-strip { gap: .3rem; padding: .3rem .45rem; }
+  .strip-btn { padding: .3rem .4rem; }
+  .strip-btn .btn-text { display: none; }
+  .strip-btn svg { width: 17px; height: 17px; }
+  .game-strip .strip-label { display: none; }
+  .game-strip .clock-value { font-size: .74rem; }
+  #stripMode { font-size: .6rem; max-width: 6.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+.card .counter-pip .sand { margin-left: .12rem; font-size: .5rem; }
+
+/* the review sheet is a reading surface: give it room */
+.modal.wide, #modal:has(.check-block) { max-width: min(94vw, 660px); }
+.check-block ul { font-size: .82rem; }
+
+/* A player chip and a stack of pile chips must be able to shrink: on a phone the
+   deck name ("Death Is a Resource · B3") is wider than the whole column. */
+.player-chip { min-width: 0; }
+.player-chip > div { min-width: 0; }
+.player-chip strong, .player-chip .muted {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pile-row, .hand-row { min-width: 0; }

@@ -59,6 +59,8 @@ const EXPLICIT_TARGETS = {
   'essence scatter': [{ kind: 'spell', filter: { creature: true } }],
   'condemn': [{ kind: 'permanent', filter: { creature: true, attacking: true } }],
   'chandra\'s ignition': ['creatureYouControl'],
+  // Skarrg Guildmage animates a land *you* control, and only your own.
+  'skarrg guildmage': [{ kind: 'permanent', filter: { land: true, controller: 'you' } }],
   'shattering spree': [{ kind: 'permanent', filter: { artifact: true } }],
   'vandalblast': [{ kind: 'permanent', filter: { artifact: true } }],
   "cyclonic rift": ['nonlandPermanent'],

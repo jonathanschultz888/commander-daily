@@ -4,8 +4,9 @@ A daily Commander (EDH) puzzle in the shape of Daily Red / Wordle: **one seeded 
 
 ```
 npm start             # http://localhost:3000
-npm test              # 83 tests: bracket legality, the 1am ET clock, restart safety, rules, scoring,
-                      #   paying a "sacrifice a creature" cost, zone layout, the upload gate, moderation.
+npm test              # 94 tests: bracket legality, the 1am ET clock, restart safety, rules, scoring,
+                      #   paying a "sacrifice a creature" cost, choosing blockers, counters that
+                      #   expire, manlands that animate, zone layout, the upload gate, moderation.
                       #   Writes to a throwaway store.
 npm run sweep         # 45 days played out (with and without a vote winner) plus practice rounds
 npm run sim           # bot-vs-bot every same-bracket pairing; reports crashes, stalls, game length
@@ -40,7 +41,12 @@ the free public hosting recipe (Render + Upstash, or an Oracle Always Free VM).*
 | Pick the creature you sacrifice | `game.js` (`sacrificeChoicesFor`), `startSacrificePick()` | A cost that reads *"Sacrifice a creature"* is a real choice (CR 601.2h): the sheet lists it as an option, the legal creatures glow, and the engine validates the victim **before** paying anything else. Activate without naming one — as the bot does — and the cheapest creature pays. *"Sacrifice another creature"* never offers the source itself. |
 | Opponent-themed UI, changes daily | `applyTheme()` | The palette is derived from the bot deck's theme colour; today it is *Funeral Violet* because the opponent is Teysa Karlov. |
 | Drag & drop, mobile-friendly | `public/app.js` (pointer events) | **Drag a card onto the table** to play it — the deliberate fast path — or **tap it to see everything it can legally do**. Targeting highlights legal targets; attackers/blockers are tap-to-select. The whole game fits one screen at 1440×900, 1280×720 and 390×844 (measured, see below). |
+| See what a card is doing | card face, `permView()` | Every creature shows its **power/toughness as it stands right now** (a 1/1 pumped to 4/4 says 4/4, a manland says 3/3 only while it is awake), its **keyword badges** (shaded green when the keyword was granted rather than printed), and its **counters as pips with their kind and count** — a counter that expires at end of turn carries a sandglass. |
+| Know what will happen before it does | `POST /api/card-check` | *How does this card work?* on any card opens the engine's own explanation: what it will do when it resolves, every ability and trigger with its cost in words, the choices it will ask for, and **the clauses the engine cannot read** — plus a **Check this card again** button that re-derives the whole analysis from scratch. |
+| Answer what is aimed at you | `threatFor()`, `maybeShowThreat()` | When the opponent targets something of yours, a popup names the spell and the victim and lists **every legal response you actually have** (only instant-speed plays), with one button to let it resolve. |
+| Attack and block without fighting the UI | `renderPromptBar()`, `onBlockerTap()` | **⚔️ Attack with all** selects exactly the creatures the engine says may attack. Blocking works in either order — tap your creature then the attacker, or the attacker first — each assigned block is a chip you can undo, and illegal pairs are refused with the reason. |
 | Every legal option, in plain words | `optionsFor()`, `openCardMenu()` | Tapping a card opens a sheet listing each legal thing separately — *Play Mountain*, *Cast Krenko, Mob Boss*, *Equip Skullclamp* — one row each, with its cost and what it will ask for (target, sacrifice). There is no such thing as a tap that silently commits a play. |
+| A quieter screen | `<details>` panels, strip nav | Points, match and log are foldable blocks that remember how you left them, the whole rail can be hidden with one press, and Daily / Practice / Tools are buttons at the top (and in the strip while you are in a game) rather than a table of contents. |
 | The whole table on one screen | `public/style.css` ("THE TABLE") | Your board, the opponent's board, the opponent's hand, the action dock, the log and the reset clock all fit the viewport with **no page scrolling** at any of the three sizes above. A permanent row overlaps its cards by 18px and scrolls sideways instead of wrapping, so a wide board never pushes the hand off the bottom. |
 | A log that says one thing once | `renderLog()`, `playNewEvents()` | Playing a land is a 2-second toast (*"You play Swamp"*) and one quiet log line — there is no second *"enters the battlefield"* line for the same event. Casting a permanent logs the cast, not the resolution. Tokens are never announced as cards. |
 | Leaderboard + name popup | `POST /api/submit` | Fires once the run ends; scores ranked by points, then turns. |
@@ -81,6 +87,8 @@ curl -X POST localhost:3000/api/import -H 'content-type: application/json' \
 ## Rules fidelity — what is and isn't implemented
 
 Implemented: turn structure and steps, priority and the stack, state-based actions (lethal damage, 0 toughness, life ≤ 0, legend rule, aura/equipment fall-off, +1/+1 and −1/−1 counters annihilating), the layer system for P/T and ability-adding effects, combat with first/double strike, trample, deathtouch, lifelink, infect; commander colour identity, command-zone returns, tax and 21 commander damage; automatic land/rock tapping including duals, any-colour sources, cost reducers and damage modifiers.
+
+**Durations are honoured, kind by kind.** A pump ("+3/+3 until end of turn"), a keyword grant ("gains indestructible"), an animation ("this land becomes a 3/3 Elemental", which is what every manland in the pool does) and a counter that genuinely expires are four different things, tracked separately and swept at the same moment by `clearEndOfTurnEffects()`. "Put a +1/+1 counter on it" is a counter and stays; "+1/+1 until end of turn" is a pump and is not one. The card face says which is which.
 
 Deliberately not implemented (listed in-app too, so nobody is misled):
 
@@ -129,7 +137,7 @@ public/         index.html, style.css, app.js — no framework, no CDN, works of
 
 ## Testing and simulation
 
-`npm test` — 83 tests, including: all ten decks are exactly 100 cards / legal / bracket-clean; the day key rolls at 01:00 ET in both EST and EDT; identical seeds produce an identical opening board; a revived run continues instead of rerolling; trample assigns exactly lethal then spills; deathtouch + lifelink behave; commander tax is +{2} per prior cast; 21 commander damage ends the game; a mono-white board can't pay for a double-black cost; combos award points; wins and losses settle differently; a full bot-vs-bot game always terminates; a *"sacrifice a creature"* cost offers every creature you control and kills the one you named (and refuses one you don't); the bot feeds the cheapest one; *"sacrifice another creature"* never offers the source; **and a run that is packed into storage, serialized and revived before every single action still ends up in exactly the same state** — the regression guard for "it only breaks after a redeploy".
+`npm test` — 94 tests, including: all ten decks are exactly 100 cards / legal / bracket-clean; the day key rolls at 01:00 ET in both EST and EDT; identical seeds produce an identical opening board; a revived run continues instead of rerolling; trample assigns exactly lethal then spills; deathtouch + lifelink behave; commander tax is +{2} per prior cast; 21 commander damage ends the game; a mono-white board can't pay for a double-black cost; combos award points; wins and losses settle differently; a full bot-vs-bot game always terminates; a manland animates, is a creature while it is awake and is a plain land again after the turn; a counter added "until end of turn" expires while a real +1/+1 counter does not; a pump leaves no counter behind; every card in the pool that says it animates a land actually can; a *"sacrifice a creature"* cost offers every creature you control and kills the one you named (and refuses one you don't); the bot feeds the cheapest one; *"sacrifice another creature"* never offers the source; **and a run that is packed into storage, serialized and revived before every single action still ends up in exactly the same state** — the regression guard for "it only breaks after a redeploy".
 
 `npm run sim` — 15 same-bracket pairings, all finishing, zero crashes/stalls, averaging ~20 turns.
 

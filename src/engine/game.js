@@ -487,11 +487,18 @@ const gameMethods = {
 
   clearEndOfTurnEffects() {
     for (const p of this.battlefield) {
+      // "until end of turn" covers four different kinds of effect, and each has to
+      // be swept here or the board quietly keeps a bonus it should have lost:
+      // a pump (-2/-2 shrinks back), a keyword grant (indestructible ends), an
+      // animation (a manland stops being a creature) and a temporary counter.
       p.tempPumps = p.tempPumps.filter((x) => !x.untilEndOfTurn);
       p.keywordGrants = p.keywordGrants.filter((x) => !x.untilEndOfTurn);
+      p.tempCounters = p.tempCounters.filter((x) => !x.untilEndOfTurn);
+      p.animations = p.animations.filter((x) => !x.untilEndOfTurn);
       p.damagePrevention = p.damagePrevention.filter((x) => !x.expired && x.expires !== 'eot');
     }
     this._staticMods = this._staticMods.filter((m) => !m.untilEndOfTurn);
+    this.recomputeStatics?.();
   },
 
   /* ---------------- stack & priority ---------------- */
