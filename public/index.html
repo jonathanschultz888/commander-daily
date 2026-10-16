@@ -21,9 +21,9 @@
   </div>
 
   <nav class="mode-tabs" role="tablist" aria-label="Sections">
-    <button class="tab active" data-pane="daily" role="tab" aria-selected="true">Daily</button>
-    <button class="tab" data-pane="practice" role="tab" aria-selected="false">Practice</button>
-    <button class="tab" data-pane="tools" role="tab" aria-selected="false">Tools</button>
+    <button class="tab active" data-pane="daily" role="tab" aria-selected="true"><span class="tab-icon"></span>Daily</button>
+    <button class="tab" data-pane="practice" role="tab" aria-selected="false"><span class="tab-icon"></span>Practice</button>
+    <button class="tab" data-pane="tools" role="tab" aria-selected="false"><span class="tab-icon"></span>Tools</button>
   </nav>
 
   <div class="topbar-right">
@@ -199,7 +199,7 @@
     <section class="side opponent" id="oppSide">
       <div class="side-head">
         <div class="player-chip">
-          <span class="avatar bot">🤖</span>
+          <span class="avatar bot" id="oppAvatarArt"></span>
           <div>
             <strong id="oppName">Opponent</strong>
             <span class="muted small" id="oppDeckName"></span>
@@ -264,9 +264,9 @@
         <div class="hand-head">
           <span class="hand-title">Your hand</span>
           <span class="hand-count muted small" id="handCount">0 cards</span>
-          <span class="hand-hint muted small">drag a card up to the board, or tap it</span>
+          <span class="hand-hint muted small">tap a card for everything it can do · drag it up to play</span>
         </div>
-        <div class="zone-row hand-row" id="myHand"></div>
+        <div class="zone-row hand-row fan" id="myHand"></div>
       </div>
     </section>
 
@@ -276,7 +276,13 @@
 
   <!-- sidebar: points + log -->
   <aside class="sidebar" id="sidebar">
-    <button class="sidebar-handle" id="sidebarHandle" aria-label="Toggle panel">⟡</button>
+    <div class="panel game-strip">
+      <button class="icon-btn" id="gameLobbyBtn" title="Back to the lobby">◀</button>
+      <span class="strip-label">Next puzzle</span>
+      <span class="clock-value" id="sidebarClock">--:--:--</span>
+      <span class="grow"></span>
+      <span class="strip-label" id="stripMode">Daily</span>
+    </div>
 
     <div class="panel points-panel">
       <div class="points-head">

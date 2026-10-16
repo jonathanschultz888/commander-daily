@@ -20,7 +20,7 @@ import { characteristics, isLand } from '../engine/cards.js';
 import * as store from './store.js';
 import * as corrections from '../engine/corrections.js';
 import { targetRequirements, castTargetRequirements } from '../engine/targeting.js';
-import { oracle } from '../decks/index.js';
+import { oracle, cardArt } from '../decks/index.js';
 
 import * as daily from './daily.js';
 import { verifyDeck, communityRecord, automationOf } from './verifyDeck.js';
@@ -192,6 +192,9 @@ function viewFor(game, { sinceEvent = 0, playerCounts = {} } = {}) {
       manaPool: p.manaPool, commanderDamage: p.commanderDamage || {},
       deckName: p.deck.name, bracket: p.deck.bracket,
       theme: p.deck.theme, themeName: p.deck.themeName, commander: p.deck.commander,
+      // the commander's own illustration: the UI paints the table with it and uses
+      // it for the opponent's avatar, so the screen belongs to the matchup of the day
+      art: cardArt(p.deck.commander), portrait: cardArt(p.deck.commander, 'small'),
     })),
     battlefield: game.battlefield.map((p) => permView(game, p)),
     log: game.logLines.slice(-40),
@@ -357,7 +360,7 @@ const server = http.createServer(async (req, res) => {
         leaderboard: store.scoresForDay(dayKey, 50),
         stats: store.leaderboardStats(dayKey),
         allTime: store.allTime(25),
-        decks: DECKS.map((d) => ({ id: d.id, name: d.name, bracket: d.bracket, commander: d.commander, theme: d.theme, themeName: d.themeName, blurbs: d.blurb })),
+        decks: DECKS.map((d) => ({ id: d.id, name: d.name, bracket: d.bracket, commander: d.commander, theme: d.theme, themeName: d.themeName, blurb: d.blurb, art: cardArt(d.commander), portrait: cardArt(d.commander, 'small') })),
         meta: { version: '0.1.0', pack: DECKS.length, ...rulesInfo().pool },
       });
     }

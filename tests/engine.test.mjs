@@ -1053,3 +1053,96 @@ test('an endless loop ends the run instead of the server', () => {
   assert.equal(g.result?.info?.draw, true, 'and reports a draw');
   assert.ok((g.logLines || []).some((l) => /endless loop/i.test(l.text || l)), 'and says so on the log');
 });
+
+test('"Sacrifice a creature" is a choice the player makes, not one the engine makes', () => {
+  // CR 601.2h: sacrificing is a *cost*, paid as part of activating, and which
+  // creature pays it is the activating player's decision. The engine used to pick
+  // the weakest creature silently and the client had no way to offer a choice.
+  const g = soloGame('squirrel-swarm', 'sea-monsters');
+  richMana(g, 0);
+  g.activePlayer = 0; g.priority = 0; g.step = 'main1'; g.pending = null; g.stack = [];
+  const bombard = putOnBattlefield(g, 'Goblin Bombardment', 0);
+  const big = putOnBattlefield(g, 'Craterhoof Behemoth', 0);
+  const small = putOnBattlefield(g, 'Elvish Visionary', 0);
+  const theirs = putOnBattlefield(g, 'Spawning Kraken', 1);
+  const target = theirs;
+
+  const offered = g.activatableAbilities(0).filter((a) => a.perm.iid === bombard.iid);
+  const acts = g.legalActions(0).filter((a) => a.iid === bombard.iid && a.legalSacrifices);
+  assert.equal(acts.length, 1, 'the ability is offered as an action');
+  const act = acts[0];
+  assert.deepEqual(act.sacrificeSpec, { kind: 'permanent', filter: { creature: true, controller: 'you' } },
+    'and it says what kind of permanent the cost wants');
+  assert.ok(act.legalSacrifices.includes(big.iid) && act.legalSacrifices.includes(small.iid),
+    'both of your creatures are offered — the strong one as well as the weak one');
+  assert.ok(!act.legalSacrifices.includes(theirs.iid), 'your opponent\'s creature is not');
+  assert.ok(act.sacrificeLabel, 'and the prompt has a label to show');
+
+  // the player names the victim: the big one pays, and it is the one that dies
+  const before = g.players[1].life;
+  const res = g.activate(0, bombard, offered[0].ability, { targets: [target.iid], sacrifice: big.iid });
+  assert.ok(res.ok, 'the activation is legal');
+  drain(g);
+  assert.ok(!g.battlefield.includes(big), 'the creature the player chose is the one that was sacrificed');
+  assert.ok(g.battlefield.includes(small), 'and the other one is still standing');
+  assert.ok(g.players[0].zones.graveyard.includes(big) || big.zone === 'graveyard', 'it went to the graveyard');
+  assert.equal((g.players[1].life ?? 0) < before || target.damage > 0 || !g.battlefield.includes(target), true,
+    'and the ability still did its 1 damage');
+});
+
+test('a sacrifice cost the player cannot pay is rejected before anything happens', () => {
+  const g = soloGame('squirrel-swarm', 'sea-monsters');
+  richMana(g, 0);
+  g.activePlayer = 0; g.priority = 0; g.step = 'main1'; g.pending = null; g.stack = [];
+  const altar = putOnBattlefield(g, 'Greater Good', 0);
+  const mine = putOnBattlefield(g, 'Elvish Visionary', 0);
+  const theirs = putOnBattlefield(g, 'Spawning Kraken', 1);
+  const offered = g.activatableAbilities(0).filter((a) => a.perm.iid === altar.iid);
+  assert.equal(g.legalActions(0).filter((a) => a.iid === altar.iid && a.legalSacrifices).length, 1,
+    'the ability is offered while a creature can pay');
+
+  const pool = g.players[0].manaPool.length;
+  const bad = g.activate(0, altar, offered[0].ability, { sacrifice: theirs.iid });
+  assert.equal(bad.ok, false, 'an illegal victim is refused');
+  assert.equal(altar.zone, 'battlefield', 'the altar is not used up');
+  assert.ok(g.battlefield.includes(theirs), 'their creature is untouched');
+  assert.equal(g.players[0].manaPool.length, pool, 'and no mana was produced');
+
+  // nothing left to sacrifice: the action stops being offered at all
+  g.battlefield = g.battlefield.filter((p) => p !== mine);
+  assert.equal(g.legalActions(0).filter((a) => a.iid === altar.iid && a.legalSacrifices).length, 0,
+    'with no creatures of your own, the ability is not offered');
+});
+
+test('the bot (and any seat with nobody at the keyboard) feeds the cheapest creature', () => {
+  const g = soloGame('squirrel-swarm', 'sea-monsters');
+  richMana(g, 0);
+  g.activePlayer = 0; g.priority = 0; g.step = 'main1'; g.pending = null; g.stack = [];
+  const seer = putOnBattlefield(g, 'Viscera Seer', 0);
+  const huge = putOnBattlefield(g, 'Craterhoof Behemoth', 0);
+  const tiny = putOnBattlefield(g, 'Elvish Visionary', 0);
+  const offered = g.activatableAbilities(0).filter((a) => a.perm.iid === seer.iid);
+  assert.ok(g.legalActions(0).some((a) => a.iid === seer.iid && a.legalSacrifices), 'the ability is offered');
+  assert.ok(g.activate(0, seer, offered[0].ability, { targets: [] }).ok, 'activating without naming a victim is allowed');
+  drain(g);
+  assert.ok(g.battlefield.includes(huge), 'the expensive creature is never the one that pays');
+  const eaten = [seer, tiny].filter((c) => !g.battlefield.includes(c));
+  assert.equal(eaten.length, 1, 'one of the two cheap creatures paid it (they are worth the same to the engine)');
+  assert.notEqual(eaten[0], huge, 'and it was not the 5/5');
+});
+
+test('Viscera Seer eats itself rather than nothing — but "sacrifice another" never does', () => {
+  const g = soloGame('squirrel-swarm', 'sea-monsters');
+  richMana(g, 0);
+  g.activePlayer = 0; g.priority = 0; g.step = 'main1'; g.pending = null; g.stack = [];
+  // The Seer is a creature itself, so it may pay its own cost...
+  const seer = putOnBattlefield(g, 'Viscera Seer', 0);
+  const offered = g.legalActions(0).filter((a) => a.iid === seer.iid && a.legalSacrifices);
+  assert.deepEqual(offered[0].legalSacrifices, [seer.iid], 'with nothing else around, it may eat itself');
+  // ...but a card that says "another" may not, and the action disappears entirely.
+  const yawg = putOnBattlefield(g, 'Yahenni, Undying Partisan', 0);
+  const yawgActs = g.legalActions(0).filter((a) => a.iid === yawg.iid && a.legalSacrifices);
+  assert.equal(yawgActs.length, 1, 'Yahenni can use the Seer as its "another creature"');
+  assert.ok(!yawgActs[0].legalSacrifices.includes(yawg.iid), 'but never itself');
+  assert.ok(yawgActs[0].legalSacrifices.includes(seer.iid), 'and the Seer is a legal sacrifice for it');
+});

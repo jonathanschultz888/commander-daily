@@ -568,7 +568,8 @@ export const HAND_SCRIPTS = {
   // and a duplicated key means only the last one is a script at all, so the trigger
   // silently did nothing. Both halves now live in one entry.
   'yahenni, undying partisan': {
-    abilities: [{ costs: { sacrificeCreature: true }, steps: [{ op: 'counter', target: 'self', counterType: '+1/+1', n: 1 }, { op: 'grant', target: 'self', keywords: ['Indestructible'] }], label: 'Sacrifice a creature: +1/+1 and indestructible' }],
+    // "Sacrifice ANOTHER creature" — Yahenni cannot eat itself (CR 601.2h).
+    abilities: [{ costs: { sacrificeCreature: 'another' }, steps: [{ op: 'counter', target: 'self', counterType: '+1/+1', n: 1 }, { op: 'grant', target: 'self', keywords: ['Indestructible'] }], label: 'Sacrifice another creature: +1/+1 and indestructible' }],
     triggers: [{
       event: 'permanentDies',
       match: (g, self, ev) => ev.controller === g.other(self.controller),

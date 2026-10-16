@@ -81,7 +81,7 @@ If it says `WRONGPASS`, the token is mistyped, truncated, or the read-only one. 
 
 **Free tier:** 256 MB, 500,000 commands/month, no card. Every write here is one `SET` of a debounced snapshot, so a few hundred daily players costs a few thousand commands a month. You will not get close.
 
-> **Don't want to sign up yet?** `node scripts/fake-kv.mjs` runs a local stand-in of the same protocol, so you can rehearse the whole deployment path — including `npm run smoke` — on your own machine first.
+> **Don't want to sign up yet?** `node scripts/fake-upstash.mjs` runs a local stand-in of the same protocol, so you can rehearse the whole deployment path — including `npm run smoke` — on your own machine first.
 
 ## Step 2 — Get the code into Git
 

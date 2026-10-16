@@ -4,8 +4,9 @@ A daily Commander (EDH) puzzle in the shape of Daily Red / Wordle: **one seeded 
 
 ```
 npm start             # http://localhost:3000
-npm test              # 57 tests: bracket legality, the 1am ET clock, restart safety, rules, scoring,
-                      #   zone layout, the upload gate, moderation. Writes to a throwaway store.
+npm test              # 83 tests: bracket legality, the 1am ET clock, restart safety, rules, scoring,
+                      #   paying a "sacrifice a creature" cost, zone layout, the upload gate, moderation.
+                      #   Writes to a throwaway store.
 npm run sweep         # 45 days played out (with and without a vote winner) plus practice rounds
 npm run sim           # bot-vs-bot every same-bracket pairing; reports crashes, stalls, game length
 npm run coverage      # card-automation coverage report -> src/data/coverage.json
@@ -36,8 +37,12 @@ the free public hosting recipe (Render + Upstash, or an Oracle Always Free VM).*
 | Points + live feedback | `src/engine/score.js` | Awards read out plainly mid-game: *"Great combo!"*, *"Answer! Countered Rhystic Study"*, *"Saved your Kemba!"*, *"Big hit — 6 damage through"*. Panel sits beside the board in both modes. |
 | Combo visual effect | `public/app.js` (`fxCombo`) | Every card in the combo gets a **"Combo!"** badge for 3 seconds plus a screen flash and sparks. |
 | Play effect | `public/style.css` (`playIn`) | Cards land with a scale/rotate pop; damage flashes, life totals punch, points float up. |
+| Pick the creature you sacrifice | `game.js` (`sacrificeChoicesFor`), `startSacrificePick()` | A cost that reads *"Sacrifice a creature"* is a real choice (CR 601.2h): the sheet lists it as an option, the legal creatures glow, and the engine validates the victim **before** paying anything else. Activate without naming one — as the bot does — and the cheapest creature pays. *"Sacrifice another creature"* never offers the source itself. |
 | Opponent-themed UI, changes daily | `applyTheme()` | The palette is derived from the bot deck's theme colour; today it is *Funeral Violet* because the opponent is Teysa Karlov. |
-| Drag & drop, mobile-friendly | `public/app.js` (pointer events) | Drag a card onto the table, or tap it. Targeting highlights legal targets; attackers/blockers are tap-to-select. Bottom-sheet panel on phones. |
+| Drag & drop, mobile-friendly | `public/app.js` (pointer events) | **Drag a card onto the table** to play it — the deliberate fast path — or **tap it to see everything it can legally do**. Targeting highlights legal targets; attackers/blockers are tap-to-select. The whole game fits one screen at 1440×900, 1280×720 and 390×844 (measured, see below). |
+| Every legal option, in plain words | `optionsFor()`, `openCardMenu()` | Tapping a card opens a sheet listing each legal thing separately — *Play Mountain*, *Cast Krenko, Mob Boss*, *Equip Skullclamp* — one row each, with its cost and what it will ask for (target, sacrifice). There is no such thing as a tap that silently commits a play. |
+| The whole table on one screen | `public/style.css` ("THE TABLE") | Your board, the opponent's board, the opponent's hand, the action dock, the log and the reset clock all fit the viewport with **no page scrolling** at any of the three sizes above. A permanent row overlaps its cards by 18px and scrolls sideways instead of wrapping, so a wide board never pushes the hand off the bottom. |
+| A log that says one thing once | `renderLog()`, `playNewEvents()` | Playing a land is a 2-second toast (*"You play Swamp"*) and one quiet log line — there is no second *"enters the battlefield"* line for the same event. Casting a permanent logs the cast, not the resolution. Tokens are never announced as cards. |
 | Leaderboard + name popup | `POST /api/submit` | Fires once the run ends; scores ranked by points, then turns. |
 | Readable cards, one action bar | `public/app.js`, `src/server/server.js` | Hand and battlefield cards carry artwork and their printed rules text (the view reads the card through to its oracle record). Everything pressable — plays, abilities, pass, combat, target picking — renders in one dock between the two boards instead of the sidebar. |
 | Report a card that misbehaved | `POST /api/report-card`, `src/engine/corrections.js` | The engine answers the report itself: printed text vs. compiled script. Mechanical gaps are corrected automatically, saved, and applied to every later game; anything else is recorded with the reason. `GET /api/reports?token=$ADMIN_TOKEN` lists them. |
@@ -124,7 +129,7 @@ public/         index.html, style.css, app.js — no framework, no CDN, works of
 
 ## Testing and simulation
 
-`npm test` — 79 tests, including: all ten decks are exactly 100 cards / legal / bracket-clean; the day key rolls at 01:00 ET in both EST and EDT; identical seeds produce an identical opening board; a revived run continues instead of rerolling; trample assigns exactly lethal then spills; deathtouch + lifelink behave; commander tax is +{2} per prior cast; 21 commander damage ends the game; a mono-white board can't pay for a double-black cost; combos award points; wins and losses settle differently; a full bot-vs-bot game always terminates; **and a run that is packed into storage, serialized and revived before every single action still ends up in exactly the same state** — the regression guard for "it only breaks after a redeploy".
+`npm test` — 83 tests, including: all ten decks are exactly 100 cards / legal / bracket-clean; the day key rolls at 01:00 ET in both EST and EDT; identical seeds produce an identical opening board; a revived run continues instead of rerolling; trample assigns exactly lethal then spills; deathtouch + lifelink behave; commander tax is +{2} per prior cast; 21 commander damage ends the game; a mono-white board can't pay for a double-black cost; combos award points; wins and losses settle differently; a full bot-vs-bot game always terminates; a *"sacrifice a creature"* cost offers every creature you control and kills the one you named (and refuses one you don't); the bot feeds the cheapest one; *"sacrifice another creature"* never offers the source; **and a run that is packed into storage, serialized and revived before every single action still ends up in exactly the same state** — the regression guard for "it only breaks after a redeploy".
 
 `npm run sim` — 15 same-bracket pairings, all finishing, zero crashes/stalls, averaging ~20 turns.
 
@@ -146,8 +151,14 @@ public/         index.html, style.css, app.js — no framework, no CDN, works of
   `ADMIN_TOKEN` set the endpoint refuses to act at all.
 - **The action dock.** Everything a player can press lives in one bar in the middle of the table —
   playable cards, activated abilities, *Pass priority*, and the combat/target prompts — instead of
-  sitting in the sidebar, which on a phone is a bottom sheet you have to open. The dock sticks to the
-  viewport, so a decision is never something you scroll to find.
+  sitting in the sidebar. The dock is in the flow of the table, so a decision is never something you
+  scroll to find, and it wraps its own options rather than running off the edge.
+- **The hand is a hand.** Your cards are fanned along the front of the table, each one clear of the
+  next to the point where its name, type line, cost and rules text stay readable; run out of width and
+  the fan scrolls sideways, centred, so the cut falls on the two outer cards. Nothing is ever drawn on
+  top of a card's art or text.
+- **The rail on a phone.** At ≤1000px the sidebar becomes a single-column strip under the table —
+  clock, points, match state, log, concede — instead of a sheet that has to be opened.
 - **Cards read like cards.** Hand and battlefield cards show artwork plus the full rules text
   (reminder text in brackets is dropped first). An action that will ask for a target carries a
   `target` tag on its chip, and choosing it turns the dock into the target picker with the legal

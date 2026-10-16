@@ -117,6 +117,22 @@ export function loadAllDecks() {
   return SEED_DECKS.map(normalizeDeck);
 }
 
+/**
+ * Scryfall image URLs encode the card's identity in the path, so the *art crop*
+ * — the part of the illustration with no frame or text — is one string swap away.
+ * It is what the site paints behind the table and uses as its icons.
+ */
+export function artUrl(image, size = 'art_crop') {
+  if (!image) return null;
+  return String(image).replace(/\/(normal|small|large|png|border_crop)\//, `/${size}/`);
+}
+
+/** The art crop for any card in the pool, by name. */
+export function cardArt(name, size = 'art_crop') {
+  const card = oracle[String(name || '').toLowerCase()];
+  return artUrl(card && card.image, size);
+}
+
 export function colorIdentityOf(name) {
   const c = oracle[name.toLowerCase()];
   return c ? c.color_identity : [];

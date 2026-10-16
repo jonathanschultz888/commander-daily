@@ -202,7 +202,11 @@ test('a card on the table shows its artwork and its rules text', () => {
   assert.ok(art, '.card .art exists');
   const opacity = art[1].match(/opacity:\s*([\d.]+)/);
   assert.ok(!opacity || Number(opacity[1]) >= 0.9, `artwork must not be washed out (opacity: ${opacity && opacity[1]})`);
-  assert.ok(/background-size:\s*cover/.test(art[1]), 'and it is drawn to fill the card');
+  // "Filling the card" now means filling it with the *picture*: the tile blows the
+  // card image up to the artwork window (260% / centre 19%) instead of using a plain
+  // `cover`, which showed the card's frame and type line as a blurry copy of itself.
+  assert.ok(/background-size:\s*(cover|\d{3}%)/.test(art[1]), `and it is drawn to fill the card (${art[1].match(/background-size:[^;]*/)})`);
+  assert.ok(/background-position:\s*50% 19%/.test(art[1]), 'framed on the artwork window rather than the frame');
   assert.ok(/\.card \.art::after/.test(css), 'with a scrim so the text on top stays readable');
 
   // Nothing anywhere may hide the rules text — media query or otherwise.

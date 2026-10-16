@@ -11,7 +11,7 @@
  * server-side keyed to the session token.
  */
 import { hashSeed } from '../engine/rng.js';
-import { loadAllDecks } from '../decks/index.js';
+import { loadAllDecks, cardArt } from '../decks/index.js';
 import { deckFromRecord } from './verifyDeck.js';
 import * as store from './store.js';
 
@@ -163,8 +163,8 @@ export function dailySetup(dayKey) {
   return {
     dayKey, seed, bracket,
     decks: [humanDeck, botDeck],
-    humanDeck: { id: humanDeck.id, name: humanDeck.name, bracket: humanDeck.bracket, commander: humanDeck.commander, blurb: humanDeck.blurb },
-    botDeck: { id: botDeck.id, name: botDeck.name, bracket: botDeck.bracket, commander: botDeck.commander, theme: botDeck.theme, themeName: botDeck.themeName, blurb: botDeck.blurb, prototype: botDeck.prototype },
+    humanDeck: { id: humanDeck.id, name: humanDeck.name, bracket: humanDeck.bracket, commander: humanDeck.commander, blurb: humanDeck.blurb, art: cardArt(humanDeck.commander), portrait: cardArt(humanDeck.commander, 'small') },
+    botDeck: { id: botDeck.id, name: botDeck.name, bracket: botDeck.bracket, commander: botDeck.commander, theme: botDeck.theme, themeName: botDeck.themeName, blurb: botDeck.blurb, prototype: botDeck.prototype, art: cardArt(botDeck.commander), portrait: cardArt(botDeck.commander, 'small') },
     openingTurns,
     voteTally: votes,
   };
@@ -208,7 +208,7 @@ export function voteOptions(dayKey) {
   }
   return {
     nextKey, bracket,
-    options: three.map((x) => ({ id: x.id, name: x.name, bracket: x.bracket, commander: x.commander, blurb: x.blurb, theme: x.theme })),
+    options: three.map((x) => ({ id: x.id, name: x.name, bracket: x.bracket, commander: x.commander, blurb: x.blurb, theme: x.theme, art: cardArt(x.commander), portrait: cardArt(x.commander, 'small') })),
     includeRandom: true,
   };
 }
@@ -231,8 +231,8 @@ export function practiceSetup(seed, excludeIds = []) {
   return {
     seed, bracket,
     decks: [humanDeck, botDeck],
-    humanDeck: { id: humanDeck.id, name: humanDeck.name, bracket: humanDeck.bracket, commander: humanDeck.commander, blurb: humanDeck.blurb },
-    botDeck: { id: botDeck.id, name: botDeck.name, bracket: botDeck.bracket, commander: botDeck.commander, theme: botDeck.theme, themeName: botDeck.themeName, blurb: botDeck.blurb, prototype: botDeck.prototype },
+    humanDeck: { id: humanDeck.id, name: humanDeck.name, bracket: humanDeck.bracket, commander: humanDeck.commander, blurb: humanDeck.blurb, art: cardArt(humanDeck.commander), portrait: cardArt(humanDeck.commander, 'small') },
+    botDeck: { id: botDeck.id, name: botDeck.name, bracket: botDeck.bracket, commander: botDeck.commander, theme: botDeck.theme, themeName: botDeck.themeName, blurb: botDeck.blurb, prototype: botDeck.prototype, art: cardArt(botDeck.commander), portrait: cardArt(botDeck.commander, 'small') },
     openingTurns,
   };
 }

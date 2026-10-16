@@ -291,7 +291,10 @@ export function applyPlayerAction(game, pid, action, { bot = null } = {}) {
         }
         x = pickX(game, perm, pid);
       }
-      const res = game.activate(pid, perm, ability, { targets, x });
+      // A `sacrificeCreature` cost is paid with the creature the player picked. If
+      // the seat is bot-driven (or the player left it out) game.activate falls back
+      // to the cheapest legal creature rather than silently skipping the cost.
+      const res = game.activate(pid, perm, ability, { targets, x, sacrifice: action.sacrifice ?? null });
       if (!res.ok) return { error: res.reason || 'illegal activation' };
       game.pending = null;
       return { ok: true };

@@ -87,6 +87,25 @@ function rehydrateEntry(game, entry) {
   return out;
 }
 
+/**
+ * What may be sacrificed to pay a `sacrificeCreature` cost?
+ *
+ * `true`      — any creature you control. The permanent itself is included when it
+ *               is a creature: "Sacrifice a creature" on Goblin Bombardment may
+ *               eat a Goblin that happens to be the enchantment's controller's.
+ * `'another'` — a creature you control OTHER than the source, which is what
+ *               "Sacrifice another creature" prints (Yahenni, Viscera Seer).
+ * The player chooses; the bot and any engine-driven seat get the cheapest one.
+ */
+function sacrificeChoicesFor(game, playerId, perm, costs) {
+  const wants = costs && costs.sacrificeCreature;
+  if (!wants) return [];
+  return game.creaturesControlledBy(playerId).filter((c) => {
+    if (c.iid === perm.iid && (wants === 'another' || !isCreature(perm))) return false;
+    return true;
+  });
+}
+
 /** Can this permanent pay a `counters` cost, e.g. `{ counters: { charge: 1 } }`? */
 function canPayCounters(perm, wanted) {
   return Object.entries(wanted).every(([type, n]) => (perm.counters?.[type] || 0) >= n);
@@ -522,7 +541,8 @@ const gameMethods = {
     if (isPermanentSpell) {
       card.stackEntry = null;
       card.controller = entry.controller;
-      putPermanent(this, card, entry.controller, { targets });
+      // `cast()` already logged "casts X", so the arrival is not announced twice.
+      putPermanent(this, card, entry.controller, { targets, announced: true });
       // (putPermanent attaches an Aura to the permanent it was cast on, which is
       // also what keeps the state-based check from binning it on the way in.)
       this.comboCheck(entry.controller);
@@ -900,12 +920,15 @@ const gameMethods = {
       const idx = pl.zones.hand.indexOf(card);
       if (idx < 0) return { ok: false, reason: 'not in hand' };
       pl.zones.hand.splice(idx, 1);
-      putPermanent(this, card, playerId, {});
+      putPermanent(this, card, playerId, { played: true });
       pl.landsPlayedThisTurn++;
       pl.landDrops++;
       this.emit({ type: 'landPlayed', card: card.iid, controller: playerId });
       this.triggerEvent({ type: 'landfall', player: playerId, card: card.iid, controller: playerId });
-      this.log(`${this.players[playerId].name} plays ${card.name}`);
+      // A land drop speaks for itself on the board, and the client turns the event
+      // into a toast. It does not need a log line as well — let alone two, which is
+      // what "plays Forest" plus "puts Forest onto the battlefield" amounted to.
+      this.log(`${this.verbFor(playerId, 'play', 'plays')} ${card.name}`, { kind: 'land', quiet: true });
       this.checkStateBased();
       return { ok: true };
     }
@@ -949,6 +972,9 @@ const gameMethods = {
         // "Remove a charge counter from ~:" — an ability with nothing to remove
         // is not offered at all (Umezawa's Jitte).
         if (costs.counters && !canPayCounters(perm, costs.counters)) return;
+        // "Sacrifice a creature:" — you cannot activate it with nothing to feed it
+        // (CR 601.2h: costs are chosen as the ability is activated).
+        if (costs.sacrificeCreature && !sacrificeChoicesFor(this, playerId, perm, costs).length) return;
         if (ab.timing === 'sorcery' && !(this.activePlayer === playerId && ['main1', 'main2'].includes(this.step) && this.stack.length === 0)) return;
         if (ab.condition && !ab.condition(this, perm)) return;
         // Equip needs a creature to attach to — but the test must be "is there a
@@ -963,11 +989,35 @@ const gameMethods = {
     return out;
   },
 
-  activate(playerId, perm, ability, { targets = [], x = 0 } = {}) {
+  activate(playerId, perm, ability, { targets = [], x = 0, sacrifice: sacrificeChoice = null } = {}) {
     targets = (targets || []).map((t) => this.canonicalTarget(t)).filter((t) => t !== null && t !== undefined);
     const costs = ability.costs || {};
+    // Validate the sacrifice BEFORE paying anything else, so a rejected activation
+    // never leaves a half-paid board behind.
+    let sacrificeIid = sacrificeChoice;
+    if (costs.sacrificeCreature) {
+      const choices = sacrificeChoicesFor(this, playerId, perm, costs);
+      if (!choices.length) return { ok: false, reason: 'nothing to sacrifice' };
+      if (sacrificeIid === null || sacrificeIid === undefined) {
+        const cheapest = choices.slice().sort((a, b) => permValue(this, a) - permValue(this, b))[0];
+        sacrificeIid = cheapest ? cheapest.iid : null;
+      } else {
+        const wanted = typeof sacrificeIid === 'object' ? sacrificeIid : findPermanent(this, sacrificeIid);
+        if (!wanted || !choices.some((c) => c.iid === wanted.iid)) {
+          return { ok: false, reason: 'that creature cannot be sacrificed to this ability' };
+        }
+        sacrificeIid = wanted.iid;
+      }
+    }
     if (costs.tap) { if (perm.tapped) return { ok: false, reason: 'already tapped' }; tapPermanent(this, perm); }
     if (costs.mana) { const pay = this.payMana(playerId, costs.mana); if (!pay.ok) return { ok: false, reason: pay.reason }; }
+    if (costs.sacrificeCreature) {
+      const victim = findPermanent(this, sacrificeIid);
+      if (victim) {
+        this.log(`${this.players[playerId].name} sacrifices ${victim.name}`);
+        sacrifice(this, victim, { reason: 'activated ability cost', source: perm });
+      }
+    }
     if (costs.sacrificeSelf) sacrifice(this, perm, { reason: 'activated ability cost' });
     if (costs.life) loseLife(this, playerId, costs.life, {});
     if (costs.counters) {
@@ -1045,6 +1095,15 @@ const gameMethods = {
           : { kind: 'permanent', filter: {} };
         if (!legalTargets(this, { source: perm, controller: playerId }, spec).filter((x) => x !== null).length) continue;
       }
+      if (ability.costs?.sacrificeCreature) {
+        const choices = sacrificeChoicesFor(this, playerId, perm, ability.costs);
+        if (!choices.length) continue;
+        act.sacrificeSpec = { kind: 'permanent', filter: { creature: true, controller: 'you' } };
+        act.legalSacrifices = choices.map((c) => c.iid);
+        act.sacrificeLabel = ability.costs.sacrificeCreature === 'another'
+          ? 'Choose a creature to sacrifice (another creature)'
+          : 'Choose a creature to sacrifice';
+      }
       if (ability.equip !== undefined && !this.creaturesControlledBy(playerId).length) continue; // nothing to equip
       if (ability.equip !== undefined) {
         act.targetSpec = { kind: 'permanent', filter: { creature: true, controller: 'you' } };
@@ -1056,6 +1115,11 @@ const gameMethods = {
       actions.push(act);
     }
     return actions;
+  },
+
+  /** Which creatures may be fed to a `sacrificeCreature` cost (see the module helper). */
+  sacrificeChoices(playerId, perm, costs) {
+    return sacrificeChoicesFor(this, playerId, perm, costs);
   },
 
   /** Attach the target spec + legal target ids so the client can offer choices. */
@@ -1106,6 +1170,12 @@ const gameMethods = {
   },
 
   log(text, meta = {}) { this.logLines.push({ text, turn: this.turn, ...meta }); },
+
+  /** "You play X" but "Teysa plays X" — the human seat is called You. */
+  verbFor(playerId, mine, theirs) {
+    const name = this.players[playerId]?.name || '';
+    return name === 'You' ? `You ${mine}` : `${name} ${theirs}`;
+  },
   logEvent(event) {
     const nameOf = (iid) => {
       const c = this.battlefield.find((p) => p.iid === iid)
@@ -1113,7 +1183,21 @@ const gameMethods = {
       return c ? c.name : 'a card';
     };
     switch (event.type) {
-      case 'etb': this.log(`${this.players[event.controller].name} puts ${nameOf(event.card)} onto the battlefield`); break;
+      // A land entering is the *same action* as playing it, and the play is logged
+      // where it happens — so a second "puts Forest onto the battlefield" line is
+      // noise, and it is the line players read as a bug. Lands that arrive some
+      // other way (Rampant Growth, a fetch) still get their own line.
+      case 'etb': {
+        const card = this.battlefield.find((p) => p.iid === event.card);
+        // Playing a land IS the land entering, and the play itself is logged right
+        // where it happens. A second "puts Forest onto the battlefield" line is
+        // pure noise — and it reads as a bug to players. Lands that arrive another
+        // way (Rampant Growth, a fetch, an opponent's Armageddon rebuy) still get
+        // their own line.
+        const quiet = event.isToken || event.played || event.announced;
+        if (!quiet) this.log(`${this.verbFor(event.controller, 'put', 'puts')} ${nameOf(event.card)} onto the battlefield`);
+        break;
+      }
       case 'dies': this.log(`${nameOf(event.card)} dies`, { player: event.controller }); break;
       case 'damage': this.log(`${event.srcName || 'Something'} deals ${event.amount} to ${event.isPlayer ? this.players[event.target].name : nameOf(event.target)}`); break;
       case 'lifechange': this.log(`${this.players[event.player].name} ${event.gain ? 'gains' : 'loses'} ${Math.abs(event.amount)} life`); break;

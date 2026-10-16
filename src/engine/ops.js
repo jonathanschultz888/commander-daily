@@ -370,7 +370,7 @@ export function removeFromBattlefield(g, perm) {
   g.recomputeStatics();
 }
 
-export function putPermanent(g, card, playerId, { tapped = false, asToken = false, targets = [] } = {}) {
+export function putPermanent(g, card, playerId, { tapped = false, asToken = false, targets = [], played = false, announced = false } = {}) {
   const inst = asToken
     ? makeTokenInstance(card, { owner: playerId, controller: playerId, iid: g.nextIid() })
     : card;
@@ -399,7 +399,7 @@ export function putPermanent(g, card, playerId, { tapped = false, asToken = fals
     }
   }
   g.recomputeStatics();
-  g.emit({ type: 'etb', card: inst.iid, controller: playerId, isToken: inst.isToken });
+  g.emit({ type: 'etb', card: inst.iid, controller: playerId, isToken: inst.isToken, played, announced });
   if (!asToken && g.runEnterAbility) g.runEnterAbility(inst, playerId, targets);
   g.checkStateBased();
   return inst;

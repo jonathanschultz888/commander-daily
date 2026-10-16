@@ -219,11 +219,16 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--accent); white-space: nowrap; padding-right: .2rem; border-right: 1px solid var(--line);
 }
 .prompt-bar .dock-actions {
+  display: flex; align-items: center; gap: .4rem; min-width: 0;
+  flex-wrap: wrap; max-height: 4.6rem; overflow-y: auto; overflow-x: hidden;
   display: flex; gap: .35rem; align-items: center; flex: 1; min-width: 0;
   overflow-x: auto; padding-bottom: .1rem; scrollbar-width: thin;
 }
-.prompt-bar .dock-chip {
-  display: inline-flex; align-items: center; gap: .35rem; flex: 0 0 auto;
+.prompt-bar .dock-chip-label { flex: 1 1 auto; min-width: 0; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-chip {
+  /* shrinkable: on a phone a chip ellipsizes rather than running off the dock */
+  display: inline-flex; align-items: center; gap: .35rem; flex: 0 1 auto;
+  min-width: 0; max-width: 100%;
   background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
   border-radius: 999px; padding: .34rem .7rem; font: inherit; font-size: .8rem; font-weight: 600;
   cursor: pointer; transition: transform .12s ease, border-color .12s ease, background .12s ease;
@@ -264,21 +269,48 @@ button { font-family: inherit; cursor: pointer; }
   user-select: none; touch-action: manipulation;
 }
 .card .art {
-  position: absolute; inset: 0; background-size: cover; background-position: center 18%;
-  opacity: 1; pointer-events: none;
-  filter: saturate(1.06) contrast(1.03);
+  position: absolute; inset: 0; pointer-events: none;
+  /* The tile shows the card's *artwork*, not its frame: the picture window of a
+     Magic card sits at ~9%..91% across and ~12%..53% down, so the image is blown up
+     to 200% and shifted until that window fills the tile. (Plain `cover` showed the
+     frame's border and type line — a blurry copy of the card rather than its art;
+     260% cropped so tight that a full-art basic lost its subject. See
+     docs/shots/art-framing-ab.png.) */
+  background-size: 200% auto; background-position: 50% 19%;
+  opacity: 1;
+  filter: saturate(1.08) contrast(1.04);
 }
 /* Readability scrim: the art stays visible at the top, the name/type/rules text
    sits on the darkened lower two-thirds. */
 .card .art::after {
   content: ''; position: absolute; inset: 0;
   background: linear-gradient(180deg,
-    rgba(8, 12, 17, .18) 0%, rgba(8, 12, 17, .34) 26%,
-    rgba(9, 14, 20, .82) 54%, rgba(9, 14, 20, .95) 74%, rgba(9, 14, 20, .97) 100%);
+    rgba(8, 12, 17, .30) 0%, rgba(8, 12, 17, .50) 30%,
+    rgba(9, 14, 20, .88) 46%, rgba(9, 14, 20, .95) 66%, rgba(9, 14, 20, .96) 100%);
 }
-.card .name { position: relative; font-size: .7rem; font-weight: 700; line-height: 1.15; padding-right: 1.6rem; text-shadow: 0 1px 3px rgba(0, 0, 0, .95), 0 0 8px rgba(0, 0, 0, .6); }
-.card .cost { position: absolute; top: .3rem; right: .35rem; font-size: .64rem; color: var(--accent); font-weight: 700; }
-.card .type { position: relative; font-size: .6rem; color: #b9c8da; margin-top: .15rem; border-bottom: 1px solid #26333f; padding-bottom: .15rem; text-shadow: 0 1px 2px rgba(0, 0, 0, .9); }
+.card .name {
+  position: relative; font-size: .68rem; font-weight: 700; line-height: 1.15;
+  /* room for a genuinely long name ("Titania, Protector of Argoth") on three
+     lines: a clipped title is the one thing a card can never afford to lose */
+  padding: 0 .05rem; max-height: 3.5em; overflow: hidden;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .95), 0 0 8px rgba(0, 0, 0, .6);
+}
+/* title row: the name owns the full width of the card, and the mana cost shares a
+   line with the type instead of sitting on top of the name. Nothing overlaps. */
+.card .card-mid {
+  position: relative; display: flex; align-items: baseline; gap: .25rem;
+  margin-top: .12rem; border-bottom: 1px solid #26333f; padding-bottom: .12rem;
+}
+.card .cost {
+  flex: 0 0 auto; font-size: .62rem; color: var(--accent); font-weight: 700;
+  line-height: 1.15; white-space: nowrap;
+  background: rgba(6, 10, 14, .62); border-radius: 4px; padding: .02rem .2rem;
+}
+.card .type {
+  position: relative; flex: 1 1 auto; min-width: 0; font-size: .6rem; color: #b9c8da;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .9);
+}
 .card .text {
   position: relative; font-size: .58rem; line-height: 1.3; color: #e2ecf7; margin-top: .2rem;
   overflow: hidden; flex: 1; white-space: pre-line; text-shadow: 0 1px 2px rgba(0, 0, 0, .8);
@@ -369,7 +401,6 @@ button { font-family: inherit; cursor: pointer; }
 .match-meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: .4rem; font-size: .8rem; }
 .match-meta div { background: var(--bg-3); border-radius: 6px; padding: .35rem .45rem; }
 .match-meta strong { display: block; font-size: .95rem; color: var(--accent); }
-.combo-feed:empty::before { content: 'No combos yet — assemble something silly.'; color: var(--muted); font-size: .78rem; }
 .combo-item { font-size: .8rem; background: linear-gradient(90deg, #ffb34733, transparent); border-left: 3px solid #ffb347; padding: .25rem .45rem; border-radius: 4px; margin-bottom: .25rem; }
 .log { max-height: 210px; overflow-y: auto; font-size: .78rem; color: var(--muted); display: flex; flex-direction: column-reverse; gap: .18rem; }
 .log .e { padding: .12rem 0; border-bottom: 1px solid #1b2734; }
@@ -443,23 +474,7 @@ button { font-family: inherit; cursor: pointer; }
 @media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } }
 
 /* ---------------- responsive ---------------- */
-@media (max-width: 1080px) {
-  .game { grid-template-columns: minmax(0, 1fr); }
-  .sidebar {
-    position: fixed; left: 0; right: 0; bottom: 0; top: auto; z-index: 50;
-    height: 62vh; overflow-y: auto; border-top: 1px solid var(--line);
-    background: var(--bg-2); border-radius: 18px 18px 0 0; padding: .8rem;
-    transform: translateY(calc(100% - 46px)); transition: transform .25s ease;
-    box-shadow: 0 -12px 30px rgba(0,0,0,.5);
-  }
-  .sidebar.open { transform: translateY(0); }
-  .sidebar-handle {
-    display: block; width: 100%; background: transparent; border: 0; color: var(--muted);
-    font-size: 1.1rem; padding: .2rem 0 .5rem; text-align: center;
-  }
-  .hero { grid-template-columns: 1fr; }
-  body.game-active { padding-bottom: 46px; }
-}
+
 @media (max-width: 700px) {
   :root { --card-w: 92px; --card-h: 132px; }
   .brand-text span { display: none; }
@@ -627,7 +642,6 @@ textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace
   .zone { display: block; }
   .zone-cards { margin-top: .25rem; }
   .hand-hint { display: none; }
-  .hand-row .card { transform: none; }
 }
 
 /* ---------------- three-zone board on small screens ---------------- */
@@ -665,3 +679,393 @@ textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace
 .check-list .mark.ok { color: var(--good); }
 #reportNote { width: 100%; margin: .4rem 0 .6rem; }
 .end-actions { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: 1rem; }
+
+/* ==========================================================================
+   THE TABLE — everything on one screen, no scrolling, cards in a real hand
+   ==========================================================================
+   The play screen is exactly one viewport tall: the opponent's side, the combat
+   line and your own side are always visible at once, and the hand is a fan along
+   the bottom edge of the screen, the way it sits in front of you at a real table.
+   Only two things scroll, and only when they have to: a long game log and a long
+   lane. Nothing the player must *look at* to make a decision ever scrolls.
+   -------------------------------------------------------------------------- */
+
+/* In a game the page IS the table: one viewport, no page scroll anywhere. The
+   topbar is replaced by a compact strip inside the rail, so the full height goes
+   to the board. */
+body.game-active {
+  overflow: hidden;
+  height: 100dvh;
+  background:
+    radial-gradient(120% 80% at 50% -10%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 60%),
+    radial-gradient(80% 60% at 50% 120%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 65%),
+    linear-gradient(180deg, #0a0d12 0%, #0d1219 45%, #0a0d12 100%);
+}
+body.game-active::before {
+  content: '';
+  position: fixed; inset: -6%;
+  background-image: var(--table-art, none);
+  background-size: cover; background-position: center 30%;
+  filter: blur(26px) saturate(.75) brightness(.42);
+  opacity: .5; pointer-events: none; z-index: 0;
+  animation: tableDrift 60s ease-in-out infinite alternate;
+}
+@keyframes tableDrift { from { transform: scale(1.02) translateY(0); } to { transform: scale(1.08) translateY(-1.5%); } }
+
+body.game-active .topbar { display: none; }
+.game {
+  position: relative; z-index: 1;
+  display: grid; grid-template-columns: minmax(0, 1fr) 272px;
+  gap: .4rem; padding: .35rem clamp(.3rem, .8vw, .7rem);
+  height: 100dvh; max-height: 100dvh; overflow: hidden;
+}
+.board-wrap {
+  /* The table is its own layer: a card lifted by hover, a play-in animation or a
+     lane scrolled sideways can never paint over the rail beside it, and nothing
+     spills past the edge of the table. */
+  isolation: isolate; overflow: hidden;
+  display: grid;
+  grid-template-rows: minmax(0, 0.92fr) auto minmax(0, 1.22fr);
+  gap: .3rem; min-height: 0; height: 100%; padding-bottom: 0;
+}
+.side { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: .3rem .45rem; background: transparent; border: 0; }
+/* The two creature rows face each other across the combat line; the rest of each
+   board hangs off the back. Without this both halves floated in the middle of their
+   box and the table looked empty above and below. */
+.side.opponent .zone { justify-content: flex-end; }
+.side.me .zone { justify-content: flex-start; }
+.side.opponent .zone-label { order: 2; margin-top: .15rem; }
+.side.opponent .zone-cards { order: 1; }
+.side.opponent { border-top: 0; }
+.side.me { border-bottom: 0; }
+.side .board { flex: 1; min-height: 0; }
+
+/* --- lanes: three side by side per player, so a whole board fits without scrolling --- */
+.board {
+  display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: .4rem; padding: .28rem; border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--line));
+  background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(0,0,0,.18));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+  min-height: 0; overflow: hidden;
+}
+.zone {
+  /* min-width: 0 is load-bearing: a grid item's automatic minimum size is its
+     content, so a lane of nowrap cards would otherwise stretch the whole table
+     past the viewport instead of scrolling inside its own lane. */
+  min-width: 0; min-height: 0; padding: .2rem .3rem .3rem;
+  display: flex; flex-direction: column; gap: .15rem;
+  border-radius: 11px; border: 1px solid rgba(255,255,255,.04);
+  background: rgba(255,255,255,.014);
+}
+.zone-label {
+  position: static; width: auto; font-size: .54rem; letter-spacing: .1em;
+  color: color-mix(in srgb, var(--accent) 55%, var(--muted)); opacity: .85;
+}
+.zone-hint { display: none; }
+.zone-cards {
+  display: flex; align-items: flex-start; flex-wrap: nowrap;
+  min-width: 0; min-height: 0; overflow-x: auto; overflow-y: hidden; padding-bottom: .1rem;
+  scrollbar-width: thin;
+}
+.zone-cards:empty::after { content: '—'; opacity: .2; }
+/* permanents overlap like a real row of cards, and a hovered card lifts clear —
+   but never so far that the name of the card behind is swallowed */
+.zone-cards .card + .card { margin-left: -18px; }
+.zone-cards .card:hover { transform: translateY(-6px) scale(1.02); z-index: 30; }
+.zone-front { border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+
+/* --- the two player bars, tightened into single lines --- */
+.side-head {
+  display: flex; align-items: center; justify-content: space-between; gap: .5rem;
+  padding: .1rem .2rem .25rem;
+}
+.player-chip { gap: .45rem; }
+.player-chip strong { font-size: .88rem; line-height: 1.1; }
+.player-chip .muted { font-size: .68rem; }
+.avatar {
+  width: 34px; height: 34px; background-size: cover; background-position: center 22%;
+  border: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.avatar.you { background: linear-gradient(150deg, var(--accent), #1b2734); display: grid; place-items: center; font-size: 1rem; }
+.life-total {
+  font-size: clamp(1.15rem, 2.4vh, 1.6rem); font-weight: 900; letter-spacing: -.02em;
+  padding: .05rem .55rem; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, rgba(0,0,0,.35));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.pile-row { padding: .1rem 0; gap: .35rem; font-size: .68rem; }
+.pile { padding: .12rem .5rem; background: rgba(0,0,0,.28); }
+.mana-row { padding: .1rem 0; font-size: .7rem; min-height: 1.1rem; }
+
+/* --- the middle: combat line, stack, and the dock you never have to hunt for --- */
+.middle { display: flex; flex-direction: column; gap: .25rem; min-height: 0; padding: 0 .2rem; }
+.stack-zone { gap: .2rem; max-height: 22vh; overflow-y: auto; }
+.stack-item { padding: .18rem .65rem; font-size: .76rem; background: color-mix(in srgb, var(--panel) 80%, transparent); }
+.combat-line { margin: 0; font-size: .55rem; }
+
+/* --- the hand: a fan at the front of the screen --- */
+.hand-panel {
+  margin-top: 0; padding: .35rem .5rem .1rem;
+  border-radius: 16px 16px 6px 6px;
+  background:
+    radial-gradient(120% 120% at 50% 130%, color-mix(in srgb, var(--accent) 26%, transparent), transparent 70%),
+    linear-gradient(180deg, rgba(255,255,255,.05), rgba(0,0,0,.34));
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line));
+  box-shadow: 0 -10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06);
+}
+.hand-head { margin-bottom: .1rem; }
+.hand-title { font-size: .62rem; }
+.hand-row.fan {
+  /* .zone-row wraps, which is right for a row of permanents and wrong for a hand:
+     a fanned hand is always ONE row and scrolls sideways when it runs out of room. */
+  display: flex; flex-wrap: nowrap; justify-content: center; align-items: flex-end;
+  min-width: 0; gap: 0; overflow-x: auto; overflow-y: visible;
+  padding: .6rem .2rem 1.15rem; min-height: calc(var(--card-h) + 1.9rem);
+}
+.hand-row.fan .card {
+  transform: rotate(var(--fan-rot, 0deg)) translateY(var(--fan-y, 0px));
+  transform-origin: 50% 130%;
+  transition: transform .16s ease, box-shadow .16s ease, margin .16s ease;
+}
+/* a fanned card overlaps its neighbour, but not so much that the text is hidden */
+.hand-row.fan { --card-w: 116px; --card-h: 162px; }
+.hand-row.fan .card + .card { margin-left: var(--fan-overlap, -22px); }
+/* A fanned card is partly covered by the next one — that is what a hand looks like.
+   What must never happen is text sliding *underneath* its neighbour: the name line
+   is therefore kept inside the visible strip, and the rest is one hover away. */
+/* A fanned card is covered by its neighbour — that is what a hand looks like. What
+   must never happen is *text* sliding under that neighbour's edge: every text
+   element is inset by exactly the overlap, so the whole card stays readable and
+   only the artwork's edge is shared. (--fan-overlap is written by renderHand.) */
+.hand-row.fan .card .name,
+.hand-row.fan .card .card-mid,
+.hand-row.fan .card .text,
+.hand-row.fan .card .pt { padding-right: calc(.3rem - var(--fan-overlap, -14px)); }
+.hand-row.fan .card .name { font-size: .64rem; }
+.hand-row.fan .card .text { font-size: .54rem; }
+.hand-row.fan .card:hover { z-index: 60; }
+.hand-row.fan .card:hover,
+.hand-row.fan .card.selected {
+  transform: rotate(0deg) translateY(-22px) scale(1.16);
+  z-index: 60 !important;
+  box-shadow: 0 18px 40px rgba(0,0,0,.6);
+}
+.hand-row.fan .card.playable { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* --- cards: art under a scrim, text on top, nothing covering either --- */
+.card {
+  --card-w: 100px; --card-h: 140px;
+  border-radius: 7px; border: 1px solid #33465a;
+  box-shadow: 0 3px 10px rgba(0,0,0,.5);
+}
+/* the badge layer stays *under* the text: the playable ring is a box-shadow, and
+   everything else that used to sit across the middle of the card is now a corner */
+.card .name { z-index: 2; }
+.card .cost { z-index: 3; }
+.card .type { z-index: 2; }
+.card .text { z-index: 2; }
+.card .pt { z-index: 3; }
+.card .counter-pip, .card .dmg-pip, .card .attach-pip, .card .unsupported-dot { z-index: 4; }
+.card.playable::after {
+  /* was a glow across the whole card face, which washed out the text underneath */
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: inset 0 0 0 2px var(--accent), 0 0 14px var(--accent-glow);
+  background: none;
+}
+.card.legal-target { animation: targetPulse 1.2s infinite; }
+.card.legal-sacrifice { outline: 3px solid #e05a5a; outline-offset: 2px; }
+
+/* --- toasts live at the top of the table, never over your hand --- */
+.toast {
+  top: .6rem; bottom: auto; left: 50%; transform: translateX(-50%);
+  border-radius: 999px; padding: .5rem 1rem; font-weight: 700; font-size: .84rem;
+  background: color-mix(in srgb, var(--bg) 78%, var(--accent) 22%);
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  max-width: min(92vw, 620px); text-align: center;
+}
+
+/* --- the right rail: points, match, log. Only the log scrolls. --- */
+.sidebar {
+  display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  gap: .35rem; position: relative; top: auto; z-index: 6;  /* in flow; a card mid-animation plays *under* the rail */
+  height: 100%; min-height: 0; overflow: hidden;
+}
+.sidebar > * { min-height: 0; }
+.sidebar .panel { padding: .45rem .55rem; border-radius: 14px; background: color-mix(in srgb, var(--panel) 84%, transparent); }
+.sidebar h2 { margin-bottom: .3rem; font-size: .82rem; }
+.log-panel { display: flex; flex-direction: column; }
+.log { max-height: none; flex: 1; min-height: 0; overflow-y: auto; font-size: .74rem; }
+.points-total { font-size: 1.9rem; line-height: 1; }
+.points-list { max-height: 5.4rem; overflow-y: auto; }
+.match-meta { gap: .5rem; }
+.combo-feed:empty::after { content: 'No combos yet — assemble something silly.'; color: var(--muted); font-size: .74rem; }
+
+/* the strip that replaces the topbar during a game */
+.game-strip { display: flex; align-items: center; gap: .4rem; }
+.game-strip .clock-value { font-size: .8rem; }
+.game-strip .strip-label { font-size: .6rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.actions-panel { padding: .4rem; }
+.btn-fun { display: flex; gap: 1%; }
+.hidden { display: none !important; }
+
+/* a short window (laptop on a projector, phone in landscape) gets smaller cards
+   rather than a scrollbar */
+@media (max-height: 800px) {
+  :root { --card-w: 92px; --card-h: 128px; }
+  .card { --card-w: 92px; --card-h: 128px; }
+  .card .text { font-size: .5rem; }
+  /* the hand is what makes a short window scroll: shrink the fan to match */
+  .hand-row.fan { --card-w: 100px; --card-h: 138px; min-height: calc(138px + 1rem); }
+  .hand-row.fan .card .name { font-size: .6rem; }
+}
+@media (max-height: 680px) {
+  :root { --card-w: 80px; --card-h: 112px; }
+  .card { --card-w: 80px; --card-h: 112px; }
+  .hand-row.fan { --card-w: 86px; --card-h: 120px; min-height: calc(120px + .8rem); }
+  .hand-row.fan .card .name { font-size: .55rem; }
+}
+
+/* --------------------------------------------------------------------------
+   Phone / narrow window: the table keeps the top, the rail becomes a strip of
+   numbers under it, and the hand scrolls sideways rather than running off the
+   edge of the screen.
+   -------------------------------------------------------------------------- */
+@media (max-width: 1000px) {
+  .game {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
+    height: 100dvh; padding: .25rem .25rem .3rem;
+  }
+  .board-wrap { height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr) auto minmax(0, 1.35fr); }
+  /* one column, in the order a player reads it: clock, score, match state, log */
+  .sidebar {
+    display: grid; grid-template-columns: minmax(0, 1fr); gap: .3rem;
+    height: auto; max-height: 30dvh; overflow: hidden;
+  }
+  .game-strip { padding: .25rem .5rem; }
+  .points-panel { display: flex; align-items: center; gap: .5rem; padding: .3rem .55rem; }
+  .points-panel h2 { font-size: .68rem; margin: 0; }
+  .points-head { display: flex; align-items: center; gap: .4rem; }
+  .points-total { font-size: 1.15rem; line-height: 1; }
+  .points-bar { display: none; }
+  .points-list, .combo-feed, .action-chips { display: none; }
+  .match-meta { font-size: .72rem; padding: 0; }
+  .dialog-grid, .opt-list { max-height: 60dvh; overflow-y: auto; }
+  .log-panel { max-height: 4.6rem; }
+  .log { max-height: none; }
+  .actions-panel { display: flex; gap: .4rem; }
+  .actions-panel #btnConcede { flex: 1; }
+  /* Three lanes side by side, as on the desktop — but each lane scrolls sideways,
+     which keeps a whole board only ONE card tall on a phone. Stacking the lanes
+     instead would need three card-rows per player and push the hand off screen. */
+  .board { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1.25fr); gap: .25rem; padding: .2rem; }
+  .zone { padding: .15rem .2rem .2rem; }
+  .zone-label { font-size: .5rem; letter-spacing: .06em; }
+  /* a hand wider than the phone scrolls; it never loses cards off the edge */
+  .hand-row.fan { justify-content: flex-start; overflow-x: auto; padding: .5rem .4rem .45rem; }
+  .hand-row.fan { --card-w: 92px; --card-h: 128px; min-height: calc(128px + .8rem); }
+  .hand-row.fan .card .name { font-size: .58rem; }
+  .hand-row.fan .card + .card { margin-left: -18px; }
+  :root { --card-w: 84px; --card-h: 118px; }
+  .card { --card-w: 84px; --card-h: 118px; }
+  .card .text { font-size: .5rem; }
+  .side-head { padding: .05rem .1rem .1rem; }
+  .life-total { font-size: 1.05rem; padding: 0 .4rem; }
+  .avatar { width: 26px; height: 26px; }
+  .pile-row { font-size: .6rem; }
+}
+
+/* ==========================================================================
+   PLAYFUL SKIN — this is a game, not a dashboard
+   ========================================================================== */
+:root {
+  --felt-edge: color-mix(in srgb, var(--accent) 40%, #000);
+  --fun-radius: 18px;
+}
+h1, h2 { font-weight: 800; }
+.panel { border-radius: var(--fun-radius); }
+.hero-card { border-radius: 24px; border-width: 2px; border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.primary {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, #fff 8%), var(--accent));
+  color: #10151b; font-weight: 900; letter-spacing: .01em;
+  border-radius: 999px; border: 1px solid color-mix(in srgb, var(--accent) 60%, #000);
+  box-shadow: 0 6px 0 color-mix(in srgb, var(--accent) 45%, #000), 0 10px 22px rgba(0,0,0,.45);
+  transition: transform .1s ease, box-shadow .1s ease;
+}
+.primary:hover { transform: translateY(-1px); }
+.primary:active { transform: translateY(3px); box-shadow: 0 2px 0 color-mix(in srgb, var(--accent) 45%, #000); }
+.ghost, .icon-btn, .tab, .pill, .dock-chip { border-radius: 999px; }
+
+/* card art in the chrome */
+.tab-icon {
+  display: inline-block; width: 18px; height: 18px; border-radius: 50%;
+  background-size: cover; background-position: center 20%;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  margin-right: .35rem; vertical-align: -.2rem;
+}
+.tab.active .tab-icon { box-shadow: 0 0 10px var(--accent-glow); }
+.duelist {
+  display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: .6rem; align-items: center;
+  padding: .5rem; border-radius: 16px; background: rgba(0,0,0,.22);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+}
+.duelist.bot { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.duelist-art {
+  position: relative; height: 108px; border-radius: 12px; background-size: cover; background-position: center 22%;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: inset 0 -30px 40px rgba(0,0,0,.7);
+}
+.duelist-art .art-tag {
+  position: absolute; left: 0; right: 0; bottom: .25rem; text-align: center;
+  font-size: .56rem; text-transform: uppercase; letter-spacing: .08em; color: #fff; opacity: .85;
+}
+.duelist-body .name { font-weight: 800; font-size: .95rem; }
+.duelist-body .cmdr { color: var(--muted); font-size: .78rem; margin-bottom: .3rem; }
+.deck-art {
+  width: 34px; height: 34px; border-radius: 8px; background-size: cover; background-position: center 20%;
+  border: 2px solid var(--accent); flex: 0 0 auto;
+}
+.deck-mini { gap: .55rem; }
+
+/* the "what can this card do" sheet */
+/* The sheet wears the card's own artwork: the header is the art window, washed
+   dark so the name and cost stay readable on top of it. */
+.opt-head {
+  position: relative; display: flex; gap: .7rem; align-items: center;
+  margin: -.2rem -.2rem .7rem; padding: .7rem; border-radius: 14px; overflow: hidden;
+  background-image: var(--opt-art, none); background-size: 145%; background-position: 50% 26%;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+.opt-head::before {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, rgba(6,10,14,.94) 0%, rgba(6,10,14,.74) 46%, rgba(6,10,14,.5) 100%);
+}
+.opt-head > * { position: relative; }
+.opt-portrait {
+  width: 66px; height: 66px; border-radius: 12px;
+  background-size: 200% auto; background-position: 50% 19%;
+  box-shadow: 0 6px 16px rgba(0,0,0,.55);
+  border: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); flex: 0 0 auto;
+}
+.opt-mana { color: var(--accent); font-weight: 700; }
+.opt-head h1 { font-size: 1.1rem; margin: 0; }
+.opt-list { display: flex; flex-direction: column; gap: .4rem; }
+.opt {
+  display: flex; align-items: center; gap: .6rem; width: 100%; text-align: left;
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--line); border-left: 3px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  border-radius: 14px; padding: .55rem .75rem; color: var(--text); cursor: pointer;
+  transition: transform .12s ease, border-color .12s ease, box-shadow .12s ease;
+}
+.opt:hover { border-color: var(--accent); box-shadow: 0 8px 20px rgba(0,0,0,.45); transform: translateY(-2px); }
+.opt:active { transform: translateY(0) scale(.995); }
+.opt-icon { font-size: 1.15rem; filter: drop-shadow(0 2px 4px rgba(0,0,0,.6)); }
+.opt-body { display: flex; flex-direction: column; }
+.opt-read {
+  margin-top: .7rem; padding: .55rem .7rem; border-radius: 12px; white-space: pre-wrap;
+  background: rgba(0,0,0,.28); border: 1px solid var(--line); font-size: .82rem; color: #cfdcea;
+}
+.opt-tools { margin-top: .5rem; }
