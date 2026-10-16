@@ -10,16 +10,18 @@ import { SPECS, specMatches, legalTargets } from './ops.js';
 import { characteristics, isCreature, isLand, hasKeyword } from './cards.js';
 
 /** Pull the required target specs out of a script's steps. */
+function scanSteps(steps, specs) {
+  for (const s of (steps || [])) {
+    if (!s) continue;
+    if (s.target === 'chosen' && s.spec) specs.push(normalizeSpec(s.spec));
+    if (s.op === 'copyPermanent' && s.target === 'chosen') specs.push(normalizeSpec('creatureYouControlOther'));
+    if (s.op === 'if') { scanSteps(s.then, specs); scanSteps(s.otherwise, specs); }
+  }
+}
+
 export function requiredTargets(script) {
   const specs = [];
-  const scan = (steps) => {
-    for (const s of (steps || [])) {
-      if (!s) continue;
-      if (s.target === 'chosen' && s.spec) specs.push(normalizeSpec(s.spec));
-      if (s.op === 'copyPermanent' && s.target === 'chosen') specs.push(normalizeSpec('creatureYouControlOther'));
-      if (s.op === 'if') { scan(s.then); scan(s.otherwise); }
-    }
-  };
+  const scan = (steps) => scanSteps(steps, specs);
   scan(script?.steps);
   for (const ab of script?.abilities || []) {
     if (ab.target) {
@@ -36,7 +38,34 @@ export function requiredTargets(script) {
 
 /** Hand scripts declare targets implicitly via steps inside their closures, so we
  *  keep an explicit table for the ones that need a choice. */
+import { correctionsFor } from './corrections.js';
+
 const EXPLICIT_TARGETS = {
+  // Instants and sorceries whose *own* effect line targets: the target is chosen
+  // as part of casting (CR 601.2c), so the cast is refused without a legal one.
+  // Without these the spell resolved with an empty target list and quietly did
+  // nothing — the counterspells in particular could not target anything at all,
+  // because a spell on the stack was rejected as a non-permanent.
+  'counterspell': ['spell'],
+  'mana leak': ['spell'],
+  'mana drain': ['spell'],
+  'pact of negation': ['spell'],
+  'force of will': ['spell'],
+  'arcane denial': ['spell'],
+  'reverberate': ['spell'],
+  'deflecting swat': ['spell'],
+  'negate': [{ kind: 'spell', filter: { noncreature: true } }],
+  'fierce guardianship': [{ kind: 'spell', filter: { noncreature: true } }],
+  'essence scatter': [{ kind: 'spell', filter: { creature: true } }],
+  'condemn': [{ kind: 'permanent', filter: { creature: true, attacking: true } }],
+  'chandra\'s ignition': ['creatureYouControl'],
+  'shattering spree': [{ kind: 'permanent', filter: { artifact: true } }],
+  'vandalblast': [{ kind: 'permanent', filter: { artifact: true } }],
+  "cyclonic rift": ['nonlandPermanent'],
+  'sign in blood': ['player'],
+  "geth's verdict": ['player'],
+  'brain freeze': ['player'],
+  'gitaxian probe': ['player'],
   'swords to plowshares': ['creatureOpponentControls'],
   'path to exile': ['creatureOpponentControls'],
   'generous gift': ['permanent'],
@@ -82,9 +111,70 @@ const EXPLICIT_TARGETS = {
   'greater good': [],
 };
 
+/**
+ * The target an Aura needs, read from its own "Enchant …" line (CR 303.4a).
+ *
+ * Nothing else in the script mentions a target: the enchant line *is* the
+ * requirement. Without this, an Aura was cast with no target at all and simply
+ * landed on the battlefield attached to nothing — the single most visible way
+ * the engine used to break a player's expectation.
+ */
+export function enchantSpec(script) {
+  const text = script?.oracle || '';
+  const isAura = !!script?.isAura || /^Enchant /m.test(text);
+  if (!isAura) return null;
+  const m = text.match(/^Enchant ([^\n(]+)/m);
+  if (!m) return SPECS.creature;                 // an Aura with no enchant line is malformed; assume a creature
+  const t = m[1].toLowerCase().trim();
+  if (/creature you control/.test(t)) return SPECS.creatureYouControl;
+  if (/creature (an )?opponent controls/.test(t)) return SPECS.creatureOpponentControls;
+  if (/creature/.test(t)) return SPECS.creature;
+  if (/land you control/.test(t)) return { kind: 'permanent', filter: { land: true, controller: 'you' } };
+  if (/land/.test(t)) return SPECS.land;
+  if (/artifact or creature/.test(t)) return { kind: 'permanent', filter: { artifactOrCreature: true } };
+  if (/artifact/.test(t)) return { kind: 'permanent', filter: { artifact: true } };
+  if (/enchantment/.test(t)) return { kind: 'permanent', filter: { enchantment: true } };
+  if (/planeswalker/.test(t)) return { kind: 'permanent', filter: { planeswalker: true } };
+  if (/permanent/.test(t)) return SPECS.permanent;
+  if (/player/.test(t)) return SPECS.player;
+  return SPECS.permanent;
+}
+
+/**
+ * What has to be chosen to *cast* this card (CR 601.2c): the spell's own effect,
+ * its enters-the-battlefield ability, and — for an Aura — the permanent it
+ * enchants.
+ *
+ * Deliberately narrower than `targetRequirements`: a permanent's activated or
+ * triggered ability picks its target when it is activated or put on the stack.
+ * A land with "{R}{G}, {T}: Target creature gets +X/+0" is still just a land
+ * when you play it, and asking for a creature to play it would be wrong.
+ */
+export function castTargetRequirements(script) {
+  const explicit = EXPLICIT_TARGETS[script?.name?.toLowerCase()];
+  let specs;
+  if (explicit !== undefined) {
+    specs = explicit.map(normalizeSpec);
+  } else {
+    specs = [];
+    scanSteps(script?.steps, specs);
+    if (script?.onEnter) specs.push(...specsFromFunction(script.onEnter));
+  }
+  // A correction saved from a player report ("this card's text targets and the
+  // engine never asked") is merged in here, which is what makes the fix apply to
+  // the next game rather than only to a log file.
+  for (const c of correctionsFor(script?.name)?.targets || []) specs.push(normalizeSpec(c));
+  const aura = enchantSpec(script);
+  if (aura) specs.unshift(aura);
+  return [...new Map(specs.map((s) => [JSON.stringify(s), s])).values()];
+}
+
 export function targetRequirements(script) {
   const explicit = EXPLICIT_TARGETS[script?.name?.toLowerCase()];
   const specs = explicit !== undefined ? explicit.map(normalizeSpec) : requiredTargets(script);
+  for (const c of correctionsFor(script?.name)?.targets || []) specs.push(normalizeSpec(c));
+  const aura = enchantSpec(script);
+  if (aura) specs.unshift(aura);
   return [...new Map(specs.map((s) => [JSON.stringify(s), s])).values()];
 }
 

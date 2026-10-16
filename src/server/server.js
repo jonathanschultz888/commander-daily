@@ -18,8 +18,12 @@ import { scoreSummary } from '../engine/score.js';
 import { cardScript } from '../engine/scripts.js';
 import { characteristics, isLand } from '../engine/cards.js';
 import * as store from './store.js';
+import * as corrections from '../engine/corrections.js';
+import { targetRequirements, castTargetRequirements } from '../engine/targeting.js';
+import { oracle } from '../decks/index.js';
+
 import * as daily from './daily.js';
-import { verifyDeck, communityRecord } from './verifyDeck.js';
+import { verifyDeck, communityRecord, automationOf } from './verifyDeck.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -35,6 +39,12 @@ if (!process.env.SESSION_SECRET) {
 }
 
 await store.load();
+
+// Player-report corrections are part of the rules from here on: load them into
+// the engine before the first game is built. (A correction is derived by the
+// engine's own analysis, never typed in by a player — see engine/corrections.js.)
+const loadedCorrections = corrections.setCorrections(store.corrections());
+if (loadedCorrections) console.log(`[corrections] ${loadedCorrections} card correction(s) applied`);
 
 // Runs only matter for their own day; keep today and yesterday so a late-night
 // player who reloads just after the 1am rollover still sees their result.
@@ -110,23 +120,37 @@ function runRecord({ mode, setup, tokenHash }) {
 /* Views                                                              */
 /* ------------------------------------------------------------------ */
 
+/**
+ * A card instance keeps the oracle record under `.card` and does not copy the
+ * printed fields onto itself, so a view that reads `card.oracle_text` sends
+ * `undefined`. That is exactly what happened to every card in hand: the client
+ * got a name, no artwork and no rules text, and rendered a card that told the
+ * player nothing. Everything that builds a view goes through this.
+ */
+const cardData = (card) => (card && card.card) || card || {};
+
 function cardView(card, { hidden = false } = {}) {
   if (!card) return null;
   if (hidden) return { iid: card.iid, hidden: true };
   const script = cardScript(card);
+  const data = cardData(card);
   return {
-    iid: card.iid, name: card.name, mana_cost: card.card?.mana_cost || card.manaCost || '', cmc: card.cmc,
-    type_line: card.type_line, oracle_text: card.oracle_text, image: card.image,
-    colors: card.colors, isCommander: !!card.isCommander, isToken: !!card.isToken,
+    iid: card.iid, name: card.name || data.name, mana_cost: data.mana_cost || card.manaCost || '', cmc: card.cmc,
+    type_line: data.type_line || card.type_line || '', oracle_text: data.oracle_text || card.oracle_text || '',
+    image: data.image || card.image || null, back_image: data.back_image || null,
+    colors: data.colors || card.colors || [], color_identity: data.color_identity || card.color_identity || [],
+    power: card.power ?? data.power ?? null, toughness: card.toughness ?? data.toughness ?? null,
+    isCommander: !!card.isCommander, isToken: !!card.isToken,
     unsupported: script.unsupported.length ? script.unsupported.length : 0,
   };
 }
 
 function permView(game, perm) {
   const ch = characteristics(game, perm);
+  const data = cardData(perm);
   return {
-    iid: perm.iid, name: perm.name, mana_cost: perm.card.mana_cost || '', image: perm.card.image,
-    type_line: perm.card.type_line, oracle_text: perm.card.oracle_text,
+    iid: perm.iid, name: perm.name, mana_cost: data.mana_cost || '', image: data.image || null,
+    type_line: data.type_line || '', oracle_text: data.oracle_text || '',
     controller: perm.controller, tapped: perm.tapped, isToken: !!perm.isToken,
     isCommander: !!perm.isCommander, damage: perm.damage, counters: perm.counters,
     power: ch.power, toughness: ch.toughness, keywords: [...ch.keywords],
@@ -148,11 +172,14 @@ function viewFor(game, { sinceEvent = 0, playerCounts = {} } = {}) {
     oppTurnNumber: game.turnNumberFor?.[opp] || 0,
     step: game.step,
     activePlayer: game.activePlayer,
+    humanId: me,                       // the dock says "Your move" vs "Respond" from this
     priority: game.priority,
     stack: game.stack.map((s) => ({
       iid: s.iid, kind: s.kind, name: s.card?.name || s.source?.name || 'ability',
       controller: s.controller, targets: (s.targets || []).map((t) => (typeof t === 'number' ? `player:${t}` : t?.iid)),
-      oracle_text: s.card?.oracle_text || s.spec?.raw || '', type_line: s.card?.type_line || 'Ability',
+      oracle_text: (s.card && cardData(s.card).oracle_text) || s.spec?.raw || '',
+      type_line: (s.card && cardData(s.card).type_line) || 'Ability',
+      image: (s.card && cardData(s.card).image) || null,
     })),
     players: game.players.map((p, i) => ({
       id: p.id, name: i === me ? 'You' : p.name, isBot: p.isBot, life: p.life,
@@ -506,6 +533,55 @@ const server = http.createServer(async (req, res) => {
       store.removeCommunityDeck(id);
       console.log(`[community] − ${existing.name} removed by the operator`);
       return json(res, 200, { ok: true, removed: id });
+    }
+
+    /* ---------------- report a card ---------------- */
+
+    // A player-facing report: "this card did not behave". The engine answers it
+    // rather than a human queue: it compares the printed text with what the
+    // compiled script actually does, and when the gap is mechanical (a spell whose
+    // text targets but which was never asked for a target) it derives the fix,
+    // saves it, and uses it from the next game on.
+    if (url.pathname === '/api/report-card' && req.method === 'POST') {
+      const body = await readBody(req);
+      const name = String(body.name || '').trim().slice(0, 80);
+      const note = String(body.note || '').trim().slice(0, 500);
+      const card = oracle[name.toLowerCase()];
+      if (!card) return json(res, 404, { error: `"${name || 'that card'}" is not one of the ${Object.keys(oracle).length} cards in the pool.` });
+      const script = cardScript(card);
+      const probe = {
+        requiredTargets: targetRequirements(script),
+        castRequiredTargets: castTargetRequirements(script),
+        statics: script.statics || [],
+        automation: automationOf(card).status,
+      };
+      const result = corrections.analyseCard(card, probe, note);
+      const saved = [];
+      for (const fix of result.corrections) {
+        const merged = store.correctionFor(card.name);
+        const targets = [...(merged?.targets || []), ...fix.targets];
+        const unique = [...new Map(targets.map((t) => [JSON.stringify(t), t])).values()];
+        store.putCorrection(card.name, { targets: unique, note: fix.note, kind: fix.kind });
+        saved.push({ kind: fix.kind, targets: unique });
+      }
+      // the engine picks the fix up immediately, for this instance and every restart
+      if (saved.length) corrections.setCorrections(store.corrections());
+      store.addReport({
+        card: card.name, note, verdict: result.verdict,
+        findings: result.findings.map((f) => `${f.bad ? 'bad' : f.warn ? 'warn' : 'ok'}: ${f.text}`),
+        corrected: saved.length > 0,
+      });
+      console.log(`[report] ${card.name}${saved.length ? ` -> correction (${saved[0].kind})` : ' (no change needed)'}`);
+      return json(res, 200, {
+        ok: true, card: card.name, verdict: result.verdict,
+        findings: result.findings, corrected: saved.length > 0, corrections: saved,
+      });
+    }
+
+    if (url.pathname === '/api/reports' && req.method === 'GET') {
+      const admin = process.env.ADMIN_TOKEN;
+      if (!admin || url.searchParams.get('token') !== admin) return json(res, 403, { error: 'Forbidden' });
+      return json(res, 200, { ok: true, reports: store.listReports(50), corrections: store.corrections() });
     }
 
     if (url.pathname === '/api/community' && req.method === 'GET') {

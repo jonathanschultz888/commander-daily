@@ -39,6 +39,8 @@ the free public hosting recipe (Render + Upstash, or an Oracle Always Free VM).*
 | Opponent-themed UI, changes daily | `applyTheme()` | The palette is derived from the bot deck's theme colour; today it is *Funeral Violet* because the opponent is Teysa Karlov. |
 | Drag & drop, mobile-friendly | `public/app.js` (pointer events) | Drag a card onto the table, or tap it. Targeting highlights legal targets; attackers/blockers are tap-to-select. Bottom-sheet panel on phones. |
 | Leaderboard + name popup | `POST /api/submit` | Fires once the run ends; scores ranked by points, then turns. |
+| Readable cards, one action bar | `public/app.js`, `src/server/server.js` | Hand and battlefield cards carry artwork and their printed rules text (the view reads the card through to its oracle record). Everything pressable — plays, abilities, pass, combat, target picking — renders in one dock between the two boards instead of the sidebar. |
+| Report a card that misbehaved | `POST /api/report-card`, `src/engine/corrections.js` | The engine answers the report itself: printed text vs. compiled script. Mechanical gaps are corrected automatically, saved, and applied to every later game; anything else is recorded with the reason. `GET /api/reports?token=$ADMIN_TOKEN` lists them. |
 | Vote for tomorrow's deck | `daily.voteOptions`, `tallyVotes` | Three deterministic candidates plus "surprise me". A clear winner seeds tomorrow's matchup; ties and "random" fall back to the seeded pick. |
 
 ## Points, concretely
@@ -122,7 +124,7 @@ public/         index.html, style.css, app.js — no framework, no CDN, works of
 
 ## Testing and simulation
 
-`npm test` — 57 tests, including: all ten decks are exactly 100 cards / legal / bracket-clean; the day key rolls at 01:00 ET in both EST and EDT; identical seeds produce an identical opening board; a revived run continues instead of rerolling; trample assigns exactly lethal then spills; deathtouch + lifelink behave; commander tax is +{2} per prior cast; 21 commander damage ends the game; a mono-white board can't pay for a double-black cost; combos award points; wins and losses settle differently; a full bot-vs-bot game always terminates; **and a run that is packed into storage, serialized and revived before every single action still ends up in exactly the same state** — the regression guard for "it only breaks after a redeploy".
+`npm test` — 79 tests, including: all ten decks are exactly 100 cards / legal / bracket-clean; the day key rolls at 01:00 ET in both EST and EDT; identical seeds produce an identical opening board; a revived run continues instead of rerolling; trample assigns exactly lethal then spills; deathtouch + lifelink behave; commander tax is +{2} per prior cast; 21 commander damage ends the game; a mono-white board can't pay for a double-black cost; combos award points; wins and losses settle differently; a full bot-vs-bot game always terminates; **and a run that is packed into storage, serialized and revived before every single action still ends up in exactly the same state** — the regression guard for "it only breaks after a redeploy".
 
 `npm run sim` — 15 same-bracket pairings, all finishing, zero crashes/stalls, averaging ~20 turns.
 
@@ -142,6 +144,20 @@ public/         index.html, style.css, app.js — no framework, no CDN, works of
 - **Moderation.** Deck names and lists are public, so set `ADMIN_TOKEN` and
   `POST /api/community/remove {"id": "…", "token": "…"}` takes a deck out of the rotation. With no
   `ADMIN_TOKEN` set the endpoint refuses to act at all.
+- **The action dock.** Everything a player can press lives in one bar in the middle of the table —
+  playable cards, activated abilities, *Pass priority*, and the combat/target prompts — instead of
+  sitting in the sidebar, which on a phone is a bottom sheet you have to open. The dock sticks to the
+  viewport, so a decision is never something you scroll to find.
+- **Cards read like cards.** Hand and battlefield cards show artwork plus the full rules text
+  (reminder text in brackets is dropped first). An action that will ask for a target carries a
+  `target` tag on its chip, and choosing it turns the dock into the target picker with the legal
+  choices glowing on the table.
+- **Report a card.** Tap any card → *⚑ This card misbehaved* → a report. The server answers it from
+  the engine's own picture of the card: printed text versus compiled script. Where the gap is
+  mechanical — a spell whose text targets and which was never asked for a target — the fix is derived
+  automatically, stored, applied from the next game onward and *kept across restarts*
+  (`src/engine/corrections.js`). Where the gap needs a hand-written fix, the report says so honestly
+  instead of pretending. `GET /api/reports?token=$ADMIN_TOKEN` lists reports and live corrections.
 
 
 `npm run sweep` — the round-trip gate: 45 days of the daily, each played **twice** (once with a vote
@@ -150,6 +166,50 @@ matchup is deterministic, brackets match, no deck plays itself, the vote winner 
 table, the game ends with a winner and points awarded, and a reload (pack → revive) partway through does
 not change the result. It also enforces the invariant that no commander is ever left in a hand or a
 library — the failure that made 2026-01-17 unwinnable. Last run: 90 games, 135 practice rounds, 0 problems. Use it before adding decks: it is the fastest way to catch a card script that throws.
+
+### Cards that were quietly doing nothing
+
+Every trigger in the pool is written against an event name, and the engine emits events by name. Get one
+letter wrong — `permanentDied` here, `permanentDies` there — and the card compiles perfectly, reports as
+*fully automated*, sits in a seed deck, and does nothing at all for the whole game. Nothing in a normal
+test suite catches that, because nothing throws.
+
+The audit found four such mismatches, one dead flag, one duplicated script key and one impossible
+condition, all in cards from the ten seed decks:
+
+| Card | What was wrong | Now |
+|---|---|---|
+| Sanguine Bond | the engine never emitted `youGainLife` at all (only a zero-amount stub), and the drain was hardcoded to 1 | you gain 4, they lose 4 |
+| Yahenni, Undying Partisan | two scripts under the same key — the later one won, so the death trigger never existed | one script, both halves |
+| Beastmaster Ascension | the `questCounters` flag nothing read; the static was unreachable | attacking creatures add quest counters, seven of them is +5/+5 |
+| Moldervine Reclamation | the clause parser read "you gain 1 life" and dropped "and draw a card" | gain 1, draw 1 |
+| Umezawa's Jitte | nothing emitted `dealsDamage`, and the cost was written `removeCounters`, which the engine never understood | charge counters on damage, and all three modes are activatable |
+| Boros Reckoner | nothing emitted `selfDamaged` ("that much damage" needs the number the trigger fired with) | it throws the damage back, at the best target for its controller |
+| Terastodon | the script destroyed one opponent artifact; the printed text is three noncreature permanents and an Elephant each | as printed |
+| every Equipment with `Equip {2}`+ | the equip gate asked whether the *Equipment* was a creature, so only free equips worked | all of them equip |
+
+`no card waits for an event the engine never emits` is now a test: it reads the engine's own source for
+`type: '…'` emit sites, compiles all 462 cards, and fails if any trigger names an event that is never
+emitted. That is the guard, not the fixes.
+
+### Rules details worth knowing
+
+- **Auras.** An Aura's target comes from its own `Enchant …` line (CR 303.4a), it enters attached to
+  what it was cast on, its continuous effects and granted abilities belong to the enchanted permanent,
+  and a state-based action puts it into the graveyard when its host leaves (CR 704.5m). Casting one
+  without a legal target is refused (CR 601.2c) — the visible bug that started all of this was a
+  Pacifism landing on the battlefield attached to nothing.
+- **Targets on the stack.** A spell on the stack is a legal target for a counterspell; the target
+  list survives resolution so the counterspell actually counters something.
+- **Restrictions.** "Can't attack" / "can't block" are compiled into keyword grants that the *single*
+  place deciding combat legality reads, so Pacifism stops a creature from attacking and blocking.
+- **"That much".** A trigger that says "that much" reads the number it fired with from the event the
+  engine carries onto the stack with it (CR 603.2c) — that is how Sanguine Bond drains what you actually
+  gained and Boros Reckoner throws back what it actually took.
+- **Endless loops.** Two effects that feed each other (a token that dies into a token that dies) would
+  spin the priority loop until the process died. The engine counts resolutions per step and calls an
+  unbreakable cycle a draw (CR 104.4b) with a line in the log. Requiem Angel also no longer triggers
+  off its own Spirits — the loop that found this.
 
 ## Known gaps / next steps
 

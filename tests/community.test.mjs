@@ -264,3 +264,107 @@ test('a malformed store cannot break a player submission', () => {
       `${label}: nobody has submitted for this token, so the duplicate check can run`);
   }
 });
+
+test('a player report is answered by the engine, and a mechanical gap is fixed for good', async () => {
+  // The feature, end to end: a player says "this card misbehaved", the server
+  // checks the printed text against the compiled script, derives the fix when the
+  // gap is mechanical, and the fix survives a restart.
+  const { spawn } = await import('node:child_process');
+  const port = 3398;
+  const dataFile = `/tmp/report-corr-${process.pid}.json`;
+  const env = { ...process.env, PORT: String(port), DATA_FILE: dataFile, SESSION_SECRET: 'y'.repeat(32), ADMIN_TOKEN: 'report-token' };
+  const start = () => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['src/server/server.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const done = (ok) => { child.stdout.off('data', onData); ok ? resolve(child) : reject(new Error('server did not start')); };
+    const onData = (b) => { if (/listening on/.test(String(b))) done(true); };
+    child.stdout.on('data', onData);
+    child.on('error', () => done(false));
+    setTimeout(() => done(false), 5000);
+  });
+  const post = async (path, body) => (await fetch(`http://127.0.0.1:${port}${path}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  })).json();
+
+  let server = await start();
+  try {
+    // Pyroblast is a modal counterspell: its text targets a spell, and the engine
+    // never asked which one — exactly the class of bug a player can see and we
+    // could not (it never crashed, it just did nothing).
+    const report = await post('/api/report-card', { name: 'Pyroblast', note: 'never asked what to counter' });
+    assert.equal(report.ok, true);
+    assert.equal(report.corrected, true, 'the engine derives a fix');
+    assert.ok(report.corrections[0].targets.some((t) => t.kind === 'spell'), 'and it is a spell target');
+    assert.match(report.verdict, /correction/i);
+    assert.ok(report.findings.some((f) => f.bad), 'and it says what was wrong');
+
+    // A card the engine already plays correctly is answered honestly, not "fixed".
+    const fine = await post('/api/report-card', { name: 'Counterspell' });
+    assert.equal(fine.corrected, false);
+    assert.ok(!fine.findings.some((f) => f.bad), 'nothing to fix on a card that works');
+
+    // An unknown card is refused with a clear reason.
+    const missing = await post('/api/report-card', { name: 'Black Lotus' });
+    assert.match(String(missing.error), /not one of/);
+
+    // The operator can read what was reported, and the correction is stored.
+    const admin = await fetch(`http://127.0.0.1:${port}/api/reports?token=report-token`).then((r) => r.json());
+    assert.equal(admin.corrections.length, 1);
+    assert.equal(admin.corrections[0].name, 'Pyroblast');
+    assert.ok(admin.reports.some((r) => r.card === 'Pyroblast' && r.corrected));
+    const refused = await fetch(`http://127.0.0.1:${port}/api/reports?token=nope`).then((r) => r.json());
+    assert.equal(refused.error, 'Forbidden');
+  } finally { server.kill('SIGTERM'); }
+  await new Promise((r) => setTimeout(r, 400));
+
+  // Restart on the same store: the correction must be part of the rules now.
+  server = await start();
+  try {
+    const again = await post('/api/report-card', { name: 'Pyroblast' });
+    assert.equal(again.corrected, false, 'the gap is closed, so nothing more to fix');
+    assert.ok(!again.findings.some((f) => f.bad), 'and the engine now asks for the target');
+  } finally { server.kill('SIGTERM'); }
+});
+
+test('the API sends the printed card, not just a name', async () => {
+  // The bug a player actually reported: every card in hand rendered as a bare
+  // name. A card *instance* keeps the oracle record under `.card`, so a view that
+  // read `card.oracle_text` sent `undefined` — no artwork, no rules text, no type
+  // line. This is the guard that it cannot come back.
+  const { spawn } = await import('node:child_process');
+  const port = 3397;
+  const env = { ...process.env, PORT: String(port), DATA_FILE: `/tmp/view-${process.pid}.json`, SESSION_SECRET: 'z'.repeat(32) };
+  const child = await new Promise((resolve, reject) => {
+    const c = spawn(process.execPath, ['src/server/server.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const done = (ok) => { c.stdout.off('data', onData); ok ? resolve(c) : reject(new Error('server did not start')); };
+    const onData = (b) => { if (/listening on/.test(String(b))) done(true); };
+    c.stdout.on('data', onData);
+    c.on('error', () => done(false));
+    setTimeout(() => done(false), 5000);
+  });
+  try {
+    const start = await fetch(`http://127.0.0.1:${port}/api/daily/start`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    }).then((r) => r.json());
+    const view = start.view;
+    assert.ok(view, 'a run starts');
+    const hand = view.players[0].hand;
+    assert.ok(hand.length >= 1, 'the player has cards in hand');
+    for (const c of hand) {
+      assert.ok(c.name, 'every card is named');
+      assert.ok(c.image && /^https?:/.test(c.image), `${c.name}: an artwork URL`);
+      assert.ok(c.type_line, `${c.name}: a type line`);
+      if (!/\bLand\b/.test(c.type_line)) {
+        assert.ok(String(c.oracle_text || '').length > 0, `${c.name}: rules text`);
+      }
+    }
+    // and the opponent's hand must NOT leak the same detail
+    for (const c of view.players[1].hand) assert.equal(c.hidden, true, 'the opponent hand stays face-down');
+
+    // battlefield permanents carry their printed text too
+    const anyPerm = view.battlefield[0];
+    if (anyPerm) {
+      assert.ok(anyPerm.image, 'a permanent has artwork');
+      assert.ok(anyPerm.oracle_text || /\bLand\b/.test(anyPerm.type_line), 'and its text');
+    }
+  } finally { child.kill('SIGTERM'); }
+});

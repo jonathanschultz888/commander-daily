@@ -184,12 +184,18 @@ Under **Environment**, add:
 
 ```
 SESSION_SECRET     <openssl rand -hex 32>   # or any long random string
-ADMIN_TOKEN        <any long random string> # optional: enables deck moderation
+ADMIN_TOKEN        <any long random string> # optional: deck moderation + the player-report review list
 STORE_BACKEND      upstash
 KV_REST_API_URL    <UPSTASH_REDIS_REST_URL>
 KV_REST_API_TOKEN  <UPSTASH_REDIS_REST_TOKEN>
 TRUST_PROXY        1
 ```
+
+> **Player reports.** Cards can be reported from the game (`⚑ This card misbehaved` on any card).
+> The server checks the card against its own script and fixes what it can on the spot; reports and the
+> live corrections are readable at `GET /api/reports?token=$ADMIN_TOKEN`. Corrections live in the store,
+> so they survive a redeploy on a host with an ephemeral disk (Upstash) — the same reason the store is
+> pluggable in the first place.
 
 > **Do not skip `SESSION_SECRET`.** Without it the server makes a new random one at each boot, which invalidates every cookie — every player's in-progress daily becomes unreachable after every restart and deploy.
 

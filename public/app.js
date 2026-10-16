@@ -297,7 +297,7 @@ function cardEl(card, { inHand = false, controller = 0, legalTarget = false } = 
     <div class="name">${esc(card.name)}</div>
     <div class="cost">${esc(card.mana_cost || '')}</div>
     <div class="type">${esc(card.type_line || '')}</div>
-    <div class="text">${esc((card.oracle_text || '').replace(/\n/g, ' ')).slice(0, 190)}</div>
+    <div class="text">${esc(trimOracle(card.oracle_text))}</div>
     ${pt}`;
   if (card.counters && (card.counters['+1/+1'] || card.counters['-1/-1'] || card.counters.slumber || card.counters.charge)) {
     const c = card.counters;
@@ -312,6 +312,20 @@ function cardEl(card, { inHand = false, controller = 0, legalTarget = false } = 
   if (card.tapped) n.classList.add('tapped');
   if (legalTarget) n.classList.add('legal-target');
   return n;
+}
+
+/**
+ * Card text as it appears on the card: reminder text in brackets is dropped (it
+ * is the first thing to cut on a 118px card) and the rest keeps its line breaks,
+ * because "Enchant creature" followed by the effect is how the card reads.
+ */
+function trimOracle(text) {
+  if (!text) return '';
+  const lines = String(text).split('\n')
+    .map((l) => l.trim())
+    .filter((l) => !/^\(.*\)$/.test(l))
+    .map((l) => l.replace(/\s*\([^)]*\)\s*$/, ''));
+  return lines.filter(Boolean).join('\n').slice(0, 300);
 }
 
 function renderHand(me) {
@@ -454,60 +468,100 @@ function renderCombos() {
   ].join('');
 }
 
+/**
+ * The sidebar's action list is now only a summary; everything a player can
+ * *press* lives in the dock in the middle of the table (see renderPromptBar), so
+ * a decision is never something you have to scroll to find.
+ */
 function renderActions() {
   const box = $('#actionChips');
+  if (!box) return;
   const p = S.pending;
   box.innerHTML = '';
-  if (!p || p.type !== 'priority') {
-    $('#btnPass').hidden = !!p; // hide pass while a special prompt owns the UI
-    return;
-  }
-  $('#btnPass').hidden = false;
-  const acts = p.actions || [];
-  if (!acts.length) { box.appendChild(el('p', 'muted small', 'Nothing to play — pass to continue.')); return; }
-  for (const a of acts) {
-    const chip = el('button', 'chip', `<span class="mana">${esc(a.mana || '')}</span>${esc(a.label)}`);
-    if (a.x || a.needsX) chip.innerHTML += ' <span class="muted small">X</span>';
-    chip.onclick = () => chooseAction(a);
-    box.appendChild(chip);
-  }
+  if (!p) return;
+  const acts = p.type === 'priority' ? (p.actions || []).filter((a) => a.type !== 'pass') : [];
+  const hint = p.type === 'priority'
+    ? (acts.length ? `${acts.length} play${acts.length === 1 ? '' : 's'} available — use the dock below the table.` : 'Nothing to play — pass to continue.')
+    : 'Follow the prompt in the middle of the table.';
+  box.appendChild(el('p', 'muted small', hint));
 }
 
+/**
+ * The dock: one place, in the middle of the table, that always shows what you
+ * can do right now. Priority offers become buttons here (they used to live in
+ * the sidebar, which on a phone is a sheet you have to open), the combat prompts
+ * keep their confirm buttons, and target selection announces itself in the same
+ * spot so the eye never has to hunt for the next step.
+ */
 function renderPromptBar() {
-  // The server no longer offers a priority window with no legal action, but the
-  // client stays defensive: a prompt with nothing but "pass" is noise, so it is
-  // not rendered at all.
-  if (S.pending?.type === 'priority' && !(S.pending.actions || []).some((a) => a.type !== 'pass')) {
-    const bar = $('#promptBar');
-    bar.hidden = true;
-    bar.innerHTML = '';
-    return;
-  }
   const bar = $('#promptBar');
   const p = S.pending;
-  if (!p || p.type === 'priority') { bar.hidden = true; return; }
+  if (!p && !S.targeting) { bar.hidden = true; bar.innerHTML = ''; return; }
   bar.hidden = false;
+
   if (S.targeting) {
-    bar.innerHTML = `<span class="grow">🎯 Choose a target for <strong>${esc(S.targeting.action.name)}</strong></span>
+    const spec = S.targeting.action.targetSpec || {};
+    bar.innerHTML = `<span class="dock-title">🎯 Pick a target</span>
+      <span class="grow">Choose what <strong>${esc(S.targeting.action.name)}</strong> points at${describeSpec(spec)}.</span>
       <button class="ghost tiny" id="cancelTarget">Cancel</button>`;
     $('#cancelTarget').onclick = () => { S.targeting = null; renderGame(); };
     return;
   }
   if (p.type === 'declareAttackers') {
-    bar.innerHTML = `<span class="grow">⚔ Declare attackers — tap your creatures, then confirm. Opponent at ${p.defenderLife} life.</span>
-      <button class="primary" id="confirmAttack">Attack with ${S.attackers.size}</button>
-      <button class="ghost tiny" id="clearAttack">None</button>`;
+    bar.innerHTML = `<span class="dock-title">⚔ Attack</span>
+      <span class="grow">Tap your creatures to send them, then confirm. Opponent at ${p.defenderLife} life.</span>
+      <button class="primary" id="confirmAttack">${S.attackers.size ? `Attack with ${S.attackers.size}` : 'No attackers'}</button>
+      <button class="ghost tiny" id="clearAttack"${S.attackers.size ? '' : ' hidden'}>Clear</button>`;
     $('#confirmAttack').onclick = () => send({ type: 'attackers', iids: [...S.attackers] });
-    $('#clearAttack').onclick = () => { S.attackers.clear(); send({ type: 'attackers', iids: [] }); };
+    $('#clearAttack').onclick = () => { S.attackers.clear(); renderGame(); };
     return;
   }
   if (p.type === 'declareBlockers') {
-    bar.innerHTML = `<span class="grow">🛡 Declare blockers — tap one of your creatures, then tap the attacker it blocks. (${S.blocks.length} assigned)</span>
-      <button class="primary" id="confirmBlocks">Confirm blocks</button>
-      <button class="ghost tiny" id="clearBlocks">No blocks</button>`;
+    bar.innerHTML = `<span class="dock-title">🛡 Block</span>
+      <span class="grow">Tap one of your creatures, then the attacker it blocks. ${S.blocks.length ? `${S.blocks.length} assigned.` : 'No blocks assigned.'}</span>
+      <button class="primary" id="confirmBlocks">${S.blocks.length ? 'Confirm blocks' : 'Take it'}</button>
+      <button class="ghost tiny" id="clearBlocks"${S.blocks.length ? '' : ' hidden'}>Clear</button>`;
     $('#confirmBlocks').onclick = () => send({ type: 'blockers', pairs: S.blocks });
-    $('#clearBlocks').onclick = () => { S.blocks = []; send({ type: 'blockers', pairs: [] }); };
+    $('#clearBlocks').onclick = () => { S.blocks = []; renderGame(); };
+    return;
   }
+  if (p.type === 'priority') {
+    const acts = (p.actions || []).filter((a) => a.type !== 'pass');
+    const chips = acts.map((a, i) => `<button class="dock-chip" data-act="${i}">
+        <span class="mana">${esc(a.mana || '')}</span><span class="dock-chip-label">${esc(a.label)}</span>
+        ${(a.x || a.needsX) ? '<span class="tag">X</span>' : ''}${a.targetSpec ? '<span class="tag target">target</span>' : ''}
+      </button>`).join('');
+    bar.innerHTML = `<span class="dock-title">${S.view?.activePlayer === S.view?.humanId ? 'Your move' : 'Respond'}</span>
+      <div class="dock-actions">${chips || '<span class="muted small">Nothing left to play</span>'}</div>
+      <button class="primary dock-pass" id="dockPass">Pass priority ▸</button>`;
+    acts.forEach((a, i) => { const b = bar.querySelector(`[data-act="${i}"]`); if (b) b.onclick = () => chooseAction(a); });
+    const pass = $('#dockPass');
+    if (pass) pass.onclick = () => sendPass();
+    return;
+  }
+  // an unknown prompt type: say so rather than showing an empty dock
+  bar.innerHTML = `<span class="grow">Waiting for the table…</span>`;
+}
+
+/** A short, plain-language hint about what counts as a legal target. */
+function describeSpec(spec) {
+  const f = spec.filter || {};
+  const bits = [];
+  if (spec.kind === 'spell') bits.push(f.creature ? 'a creature spell' : f.noncreature ? 'a noncreature spell' : 'a spell on the stack');
+  else if (spec.kind === 'player') bits.push('a player');
+  else {
+    if (f.land) bits.push('a land');
+    else if (f.artifactOrEnchantment) bits.push('an artifact or enchantment');
+    else if (f.artifact) bits.push('an artifact');
+    else if (f.enchantment) bits.push('an enchantment');
+    else if (f.creature) bits.push('a creature');
+    else if (f.nonland) bits.push('a nonland permanent');
+    else bits.push('a permanent');
+    if (f.controller === 'you') bits.push('you control');
+    if (f.controller === 'opp') bits.push('an opponent controls');
+    if (f.attacking) bits.push('that is attacking');
+  }
+  return bits.length ? ` — ${bits.join(' ')}` : '';
 }
 
 function inspect(card) {
@@ -515,7 +569,52 @@ function inspect(card) {
     <div class="pill-row"><span class="pill accent">${esc(card.mana_cost || '')}</span><span class="pill">${esc(card.type_line || '')}</span>
     ${card.isCommander ? '<span class="pill accent">Commander</span>' : ''}${card.isToken ? '<span class="pill">Token</span>' : ''}</div>
     <p style="white-space:pre-wrap">${esc(card.oracle_text || 'No rules text.')}</p>
-    ${card.power != null ? `<p class="muted">Power/toughness: ${card.power}/${card.toughness}</p>` : ''}`);
+    ${card.power != null ? `<p class="muted">Power/toughness: ${card.power}/${card.toughness}</p>` : ''}
+    <div class="report-row"><button class="ghost tiny" id="btnReportCard">⚑ This card misbehaved</button>
+    <span class="muted small">Tell us what you saw — the engine checks the card and fixes what it can.</span></div>`);
+  const btn = $('#btnReportCard');
+  if (btn) btn.onclick = () => reportCard(card);
+}
+
+/**
+ * The player-facing report. It is answered by the server's own analysis of the
+ * card (printed text vs. compiled script), not by a queue: when the gap is one
+ * the engine can close mechanically, the fix is saved and used from then on, and
+ * the player is told exactly that.
+ */
+function reportCard(card, note = '') {
+  openModal(`<h1>Report ${esc(card.name)}</h1>
+    <p class="muted">What did it do? Being specific helps: the phase, what you expected, what happened instead.</p>
+    <textarea id="reportNote" rows="3" maxlength="500" placeholder="It went onto the battlefield without asking what it should enchant…">${esc(note)}</textarea>
+    <div class="name-row">
+      <button class="primary" id="reportSend">Send report</button>
+      <button class="ghost" id="reportCancel">Cancel</button>
+    </div>
+    <div id="reportResult"></div>`);
+  $('#reportCancel').onclick = () => inspect(card);
+  $('#reportSend').onclick = async () => {
+    const text = ($('#reportNote').value || '').trim();
+    const box = $('#reportResult');
+    box.innerHTML = '<p class="muted small">Checking the card against the engine…</p>';
+    try {
+      const out = await api('/api/report-card', { name: card.name, note: text });
+      box.innerHTML = reportVerdictHtml(out);
+      const close = $('#reportClose');
+      if (close) close.onclick = () => closeModal();
+      toast(out.corrected ? 'Correction saved — thanks!' : 'Report received.');
+    } catch (e) {
+      box.innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+    }
+  };
+}
+
+function reportVerdictHtml(out) {
+  const mark = (f) => (f.bad ? '<span class="mark bad">✖</span>' : f.warn ? '<span class="mark warn">⚠</span>' : '<span class="mark ok">✔</span>');
+  return `<div class="report-verdict ${out.corrected ? 'good' : ''}">
+      <p><strong>${esc(out.verdict)}</strong></p>
+      <ul class="check-list">${(out.findings || []).map((f) => `<li class="${f.bad ? 'bad' : f.warn ? 'warn' : 'ok'}">${mark(f)}<span>${esc(f.text)}</span></li>`).join('')}</ul>
+    </div>
+    <div class="name-row"><button class="ghost" id="reportClose">Close</button></div>`;
 }
 
 /* ==========================================================================
@@ -819,13 +918,19 @@ function showGameOver() {
       </div>
       <p class="muted small" id="submitNote">You can only submit once for today's puzzle.</p>`
     : `<p class="muted small">Practice rounds are not scored. <button class="ghost tiny" id="againPractice">New practice round</button></p>`}
-    <div style="margin-top:1rem"><button class="ghost" id="viewBoard">Look at the final board</button></div>`);
+    <div class="end-actions">
+      <button class="ghost" id="viewBoard">Look at the final board</button>
+      <button class="ghost tiny" id="reportFromGame">⚑ A card misbehaved</button>
+    </div>
+    <p class="muted small">Tap any card on the table to read it — or to report it. Reports are checked against the printed text and fixed where the engine can.</p>`);
   const nameInput = $('#playerName');
   if (nameInput) {
     nameInput.value = localStorage.getItem('cd_name') || '';
     nameInput.focus();
   }
   $('#viewBoard').onclick = closeModal;
+  const reportBtn = $('#reportFromGame');
+  if (reportBtn) reportBtn.onclick = () => closeModal();   // then tap the card itself
   if ($('#submitScore')) $('#submitScore').onclick = submitScore;
   if ($('#againPractice')) $('#againPractice').onclick = () => { closeModal(); S.gameOverShown = false; startPractice(); };
 }
@@ -879,7 +984,7 @@ function wire() {
   $('#btnResumeDaily').onclick = () => startDaily().catch((e) => toast(e.message));
   $('#btnStartPractice').onclick = () => startPractice().catch((e) => toast(e.message));
   $('#btnInfo').onclick = () => showCoverage().catch((e) => toast(e.message));
-  $('#btnPass').onclick = sendPass;
+  // (passing is the dock's business now — see renderPromptBar)
   $('#btnConcede').onclick = async () => {
     const sure = await askConfirm({
       title: 'Concede this run?',

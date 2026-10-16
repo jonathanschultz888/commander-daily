@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Commander Daily — board layout preview</title>
+<style>
+/* A faithful, self-contained mock of the new board so the layout can be checked
+   without a browser: same markup shape, same class names, same CSS ideas. */
+:root{
+  --bg:#0b0f14;--bg-2:#111823;--bg-3:#16202c;--panel:#131c26;--panel-2:#182430;
+  --line:#22303f;--text:#e8eef5;--muted:#93a4b8;--accent:#9b5de5;--accent-soft:#9b5de533;
+  --good:#4ade80;--bad:#f87171;--radius:14px;--radius-sm:9px;--card-w:118px;--card-h:165px;
+  --shadow:0 10px 30px rgba(0,0,0,.45);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1000px;margin:0 auto;padding:1rem}
+.caption{color:var(--muted);font-size:.8rem;margin:.2rem 0 1rem}
+.side{border:1px solid var(--line);border-radius:var(--radius);background:linear-gradient(180deg,var(--bg-2),var(--bg));padding:.6rem;margin-bottom:.6rem}
+.side-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:.4rem}
+.player-chip{display:flex;align-items:center;gap:.5rem;font-size:.9rem}
+.avatar{width:28px;height:28px;display:grid;place-items:center;border-radius:50%;background:var(--bg-3)}
+.life-total{font-size:1.5rem;font-weight:900;font-variant-numeric:tabular-nums}
+.board{display:flex;flex-direction:column;gap:.45rem;padding:.5rem;border-radius:var(--radius);border:1px solid var(--line);background:linear-gradient(180deg,var(--bg-2),var(--bg) 70%)}
+.zone{position:relative;display:flex;gap:.5rem;align-items:flex-start;min-height:calc(var(--card-h) + 1.1rem);padding:.35rem .5rem .35rem 4.6rem;border-radius:11px;border:1px dashed transparent;background:rgba(255,255,255,.015)}
+.zone-label{position:absolute;left:.5rem;top:.45rem;width:3.9rem;font-size:.62rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);line-height:1.25;font-weight:700}
+.zone-hint{display:block;font-size:.55rem;letter-spacing:.04em;text-transform:none;opacity:.7}
+.zone-cards{display:flex;flex-wrap:wrap;gap:.35rem;align-items:flex-start;min-height:calc(var(--card-h) + .4rem)}
+.zone-cards:empty::after{content:'—';color:var(--muted);opacity:.35;font-size:.8rem;align-self:center}
+.zone-front{border-color:#9b5de55a;background:linear-gradient(180deg,transparent,#9b5de512)}
+.card{position:relative;width:var(--card-w);height:var(--card-h);border-radius:9px;border:1px solid var(--line);overflow:hidden;background:linear-gradient(180deg,#1d2a38,#121a24);display:flex;flex-direction:column;justify-content:flex-end;padding:.35rem;box-shadow:0 4px 10px rgba(0,0,0,.4)}
+.card .art{position:absolute;inset:0;background-size:cover;background-position:center top;opacity:.9}
+.card .name{position:relative;font-size:.66rem;font-weight:700;background:rgba(6,10,14,.82);border-radius:4px;padding:.15rem .25rem;margin-top:auto}
+.card .meta{position:relative;font-size:.55rem;color:#c8d4e0;background:rgba(6,10,14,.7);border-radius:4px;padding:.1rem .25rem;margin-top:.15rem;display:flex;justify-content:space-between}
+.card.tapped{transform:rotate(6deg);filter:brightness(.75)}
+.combat-line{display:flex;align-items:center;gap:.6rem;color:var(--muted);font-size:.6rem;text-transform:uppercase;letter-spacing:.12em;margin:-.15rem 0 .5rem}
+.combat-line::before,.combat-line::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,transparent,var(--line),transparent)}
+.hand-panel{margin-top:.5rem;padding:.5rem .65rem .7rem;border-radius:var(--radius);border:1px solid #9b5de573;background:radial-gradient(120% 100% at 50% 0%,#9b5de51f,transparent 70%),var(--bg-3);box-shadow:inset 0 1px 0 rgba(255,255,255,.04),var(--shadow)}
+.hand-head{display:flex;align-items:baseline;gap:.6rem;margin-bottom:.4rem}
+.hand-title{font-size:.72rem;text-transform:uppercase;letter-spacing:.12em;font-weight:800;color:var(--accent)}
+.hand-hint{margin-left:auto;color:var(--muted);font-size:.72rem}
+.hand-count{color:var(--muted);font-size:.72rem}
+.hand-row{display:flex;gap:.35rem;align-items:flex-end;min-height:calc(var(--card-h) + .5rem);flex-wrap:wrap}
+.hand-row .card{transform:translateY(-6px)}
+.hand-row .card.playable{box-shadow:0 0 0 2px var(--accent),0 8px 20px rgba(0,0,0,.5)}
+.hand-row .card.playable::after{content:'playable';position:absolute;top:-.55rem;left:50%;transform:translateX(-50%);font-size:.55rem;text-transform:uppercase;letter-spacing:.08em;background:var(--accent);color:#10161d;padding:.1rem .35rem;border-radius:999px;font-weight:800}
+.legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:.6rem;margin-top:1rem}
+.legend div{border:1px solid var(--line);border-radius:var(--radius);padding:.7rem;background:var(--panel)}
+.legend h3{margin:0 0 .3rem;font-size:.8rem;text-transform:uppercase;letter-spacing:.08em;color:var(--accent)}
+.legend p{margin:0;color:var(--muted);font-size:.78rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h2 style="margin:.2rem 0">Board layout</h2>
+  <p class="caption">A static mock of the new markup (no scripts) so the zone structure and the hand panel can be seen at a glance. Accent colour follows the opponent's deck theme.</p>
+
+  <!-- opponent -->
+  <section class="side">
+    <div class="side-head">
+      <div class="player-chip"><span class="avatar">🤖</span><div><strong>Death Is a Resource</strong><br><span style="color:var(--muted);font-size:.72rem">Teysa Karlov · B3</span></div></div>
+      <div class="life-total">38</div>
+    </div>
+    <div class="board">
+      <div class="zone"><span class="zone-label">Lands</span><div class="zone-cards">
+        <div class="card"><div class="name">Godless Shrine</div></div>
+        <div class="card"><div class="name">Swamp</div></div>
+        <div class="card tapped"><div class="name">Plains</div></div>
+      </div></div>
+      <div class="zone"><span class="zone-label">Permanents</span><div class="zone-cards">
+        <div class="card"><div class="name">Phyrexian Arena</div></div>
+      </div></div>
+      <div class="zone zone-front"><span class="zone-label">Creatures<span class="zone-hint">· attacking this way</span></span><div class="zone-cards">
+        <div class="card"><div class="name">Zulaport Cutthroat</div><div class="meta"><span>1/1</span><span>B</span></div></div>
+        <div class="card"><div class="name">Cruel Celebrant</div><div class="meta"><span>1/2</span><span>WB</span></div></div>
+      </div></div>
+    </div>
+  </section>
+
+  <div class="combat-line"><span>front line</span></div>
+
+  <!-- me -->
+  <section class="side">
+    <div class="board">
+      <div class="zone zone-front"><span class="zone-label">Your creatures<span class="zone-hint">· attack from here</span></span><div class="zone-cards">
+        <div class="card"><div class="name">Omnath, Locus of Rage</div><div class="meta"><span>5/5</span><span>commander</span></div></div>
+      </div></div>
+      <div class="zone"><span class="zone-label">Your permanents</span><div class="zone-cards">
+        <div class="card"><div class="name">Mind Stone</div></div>
+      </div></div>
+      <div class="zone"><span class="zone-label">Your lands</span><div class="zone-cards">
+        <div class="card"><div class="name">Forest</div></div>
+        <div class="card"><div class="name">Forest</div></div>
+        <div class="card"><div class="name">Mountain</div></div>
+        <div class="card tapped"><div class="name">Kessig Wolf Run</div></div>
+      </div></div>
+    </div>
+    <div class="side-head" style="margin-top:.5rem">
+      <div class="player-chip"><span class="avatar">🙂</span><div><strong>You</strong><br><span style="color:var(--muted);font-size:.72rem">The Land Reaches Back · B3</span></div></div>
+      <div class="life-total">40</div>
+    </div>
+    <div class="hand-panel">
+      <div class="hand-head">
+        <span class="hand-title">Your hand</span>
+        <span class="hand-count">5 cards</span>
+        <span class="hand-hint">drag a card up to the board, or tap it</span>
+      </div>
+      <div class="hand-row">
+        <div class="card playable"><div class="name">Ramunap Excavator</div><div class="meta"><span>2/3</span><span>{2}{G}</span></div></div>
+        <div class="card playable"><div class="name">Forest</div></div>
+        <div class="card"><div class="name">Avenger of Zendikar</div><div class="meta"><span>5/5</span><span>{5}{G}{G}</span></div></div>
+        <div class="card"><div class="name">Farseek</div><div class="meta"><span>sorcery</span><span>{1}{G}</span></div></div>
+        <div class="card"><div class="name">Forest</div></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="legend">
+    <div><h3>Creatures face each other</h3><p>Both creature rows sit nearest the middle, so the board reads like a table with a front line.</p></div>
+    <div><h3>Permanents, then lands</h3><p>Artifacts, enchantments and planeswalkers sit behind the creatures; lands at the back.</p></div>
+    <div><h3>The hand is its own panel</h3><p>Accent-bordered, labelled, with a live count — playable cards are ringed and tagged.</p></div>
+  </div>
+</div>
+</body>
+</html>

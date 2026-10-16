@@ -16,16 +16,16 @@ import {
 } from './cards.js';
 import { makeRng, rngFromState } from './rng.js';
 import { makeBot } from './bot.js';
-import { cardScript, triggerSpecsFor, staticModsFor, COMBO_REGISTRY } from './scripts.js';
+import { cardScript, triggerSpecsFor, staticModsFor, grantedAbilitiesFor, COMBO_REGISTRY } from './scripts.js';
 import { attachScoring, settlePoints } from './score.js';
-import { targetRequirements, chooseTarget } from './targeting.js';
+import { targetRequirements, castTargetRequirements, chooseTarget } from './targeting.js';
 import {
   runEffects, draw, damage, destroy, exile, sacrifice, putPermanent, createTokens, addMana,
   untap, tapPermanent, pump, grantKeyword, findPermanent, moveToGraveyard, shuffleLibrary,
   addCounters, loseLife, gainLife, permValue, SPECS, specMatches, legalTargets,
 } from './ops.js';
 
-const STEPS = [
+export const STEPS = [
   { name: 'untap', active: true },
   { name: 'upkeep', priority: true },
   { name: 'draw', priority: true },
@@ -87,6 +87,11 @@ function rehydrateEntry(game, entry) {
   return out;
 }
 
+/** Can this permanent pay a `counters` cost, e.g. `{ counters: { charge: 1 } }`? */
+function canPayCounters(perm, wanted) {
+  return Object.entries(wanted).every(([type, n]) => (perm.counters?.[type] || 0) >= n);
+}
+
 /** Highest `t####` id in a state + 1, for games saved before the counter was stored. */
 function deriveIidCounter(game) {
   const found = JSON.stringify(game).match(/"t(\d+)"/g) || [];
@@ -137,6 +142,18 @@ export function packGame(game) {
     scriptFor: undefined,
     runEnterAbility: undefined,
     unsupported: [...(game.unsupported || [])],
+    // Attachments are a two-way object graph (aura.attachedTo <-> host.attachments)
+    // and each side holds the other, which JSON cannot express — and which used to
+    // throw on save the moment anything was equipped or enchanted. The link is
+    // stored as an id and rebuilt on revive, like the stack does.
+    battlefield: game.battlefield.map((p) => ({
+      ...p,
+      attachedTo: null,
+      attachedToIid: p.attachedTo ? p.attachedTo.iid : null,
+      attachments: [],
+      staticMods: [],
+      _staticCache: null,
+    })),
     events: (game.events || []).slice(-400).map((e) => ({
       type: e.type, card: e.card, controller: e.controller, player: e.player, target: e.target,
       amount: e.amount, name: e.name, cards: e.cards, turn: e.turn, source: e.source, label: e.label, points: e.points,
@@ -182,6 +199,15 @@ export function reviveGame(state) {
   game._comboRegistry = COMBO_REGISTRY.map((c) => ({ ...c, firedThisGame: firedByName.get(c.name) || false }));
   game.attachScoring = undefined;
   if (typeof game._iidCounter !== 'number') game._iidCounter = deriveIidCounter(game);
+  // Rebuild the attachment graph from the ids stored at pack time.
+  for (const perm of game.battlefield) perm.attachments = [];
+  for (const perm of game.battlefield) {
+    const hostIid = perm.attachedToIid || state.battlefield?.find((x) => x.iid === perm.iid)?.attachedToIid;
+    perm.attachedToIid = undefined;
+    if (!hostIid) continue;
+    const host = game.battlefield.find((p) => p.iid === hostIid);
+    if (host) { perm.attachedTo = host; host.attachments.push(perm); }
+  }
   attachScoring(game);
   game.recomputeStatics();
   game.bot = makeBot(game.players[1].deck.prototype);
@@ -266,6 +292,10 @@ const gameMethods = {
     if (event.type === 'etb') this.triggerEvent({ type: 'permanentEntered', card: event.card, controller: event.controller });
     if (event.type === 'dies') {
       this.triggerEvent({ type: 'permanentDied', card: event.card, controller: event.controller });
+      // The compiler's vocabulary calls this `permanentDies`; the engine calls it
+      // `permanentDied`. Both names are emitted so a card written either way works
+      // (Moldervine Reclamation and Yahenni were dead on this one-word mismatch).
+      this.triggerEvent({ type: 'permanentDies', card: event.card, controller: event.controller });
       const card = this.players[event.controller]?.zones.graveyard.find((c) => c.iid === event.card);
       if (card) {
         const script = cardScript(card);
@@ -314,7 +344,13 @@ const gameMethods = {
       if (!src) continue; // source left before the trigger resolved
       const spec = t.spec || triggerSpecsFor(src)[t.specIndex];
       if (!spec) continue;
-      this.stack.push({ kind: 'trigger', source: src, sourceIid: src.iid, spec, specIndex: t.specIndex, controller: src.controller, iid: this.nextIid() });
+      this.stack.push({
+        kind: 'trigger', source: src, sourceIid: src.iid, spec, specIndex: t.specIndex,
+        controller: src.controller, iid: this.nextIid(),
+        // The event that caused the trigger, so an effect that says "that much"
+        // can read the number it was triggered with (CR 603.2c).
+        eventPayload: t.event || null,
+      });
     }
     return pending.length;
   },
@@ -404,6 +440,8 @@ const gameMethods = {
   advanceStep() {
     // Empty mana pools at end of each step/phase (CR 500.4)
     for (const p of this.players) p.manaPool = [];
+    // Fresh safety budget for the loop breaker (see driver.priorityWindow)
+    this._stepResolutions = 0;
     this.clearEndOfTurnEffects();
     this.stepIndex++;
     if (this.stepIndex >= STEPS.length) return this.endTurn();
@@ -471,7 +509,12 @@ const gameMethods = {
   resolveSpell(entry) {
     const card = entry.card;
     // CR 608.2b: if all targets are illegal, the spell fizzles
-    const targets = entry.targets.filter((t) => (typeof t === 'number' ? true : t && t.zone === 'battlefield') || (t && t.zone === 'stack'));
+    const targets = entry.targets.filter((t) => {
+      if (typeof t === 'number') return true;                     // a player
+      if (!t) return false;
+      if (t.kind === 'spell') return this.stack.includes(t);      // a spell still on the stack
+      return t.zone === 'battlefield';                            // a permanent still on the battlefield
+    });
     const ctx = { source: card, controller: entry.controller, targets, x: entry.x, mode: entry.mode, spell: entry };
     const script = cardScript(card);
     const isPermanentSpell = isPermanent(card) && !isInstant(card) && !isSorcery(card);
@@ -480,6 +523,8 @@ const gameMethods = {
       card.stackEntry = null;
       card.controller = entry.controller;
       putPermanent(this, card, entry.controller, { targets });
+      // (putPermanent attaches an Aura to the permanent it was cast on, which is
+      // also what keeps the state-based check from binning it on the way in.)
       this.comboCheck(entry.controller);
       this.emit({ type: 'spellResolved', card: card.iid, controller: entry.controller, name: card.name });
       return;
@@ -498,7 +543,7 @@ const gameMethods = {
   },
 
   resolveAbility(entry) {
-    const ctx = { source: entry.source, controller: entry.controller, targets: entry.targets, x: entry.x, ability: entry.spec };
+    const ctx = { source: entry.source, controller: entry.controller, targets: entry.targets, x: entry.x, ability: entry.spec, event: entry.eventPayload || null };
     if (entry.spec?.steps) runEffects(this, ctx, entry.spec.steps);
     else if (entry.spec?.effect) entry.spec.effect(this, ctx);
     this.comboCheck(entry.controller);
@@ -535,6 +580,16 @@ const gameMethods = {
           moveToGraveyard(this, perm, { reason: 'state-based action' });
           changed = true;
         }
+      }
+      // an Aura with nothing to enchant (CR 704.5m)
+      for (const perm of [...this.battlefield]) {
+        const isAura = (perm.subtypes || []).includes('Aura') || cardScript(perm).isAura;
+        if (!isAura) continue;
+        const host = perm.attachedTo;
+        if (host && this.battlefield.includes(host)) continue;
+        perm.attachedTo = null;
+        moveToGraveyard(this, perm, { reason: 'aura with no host' });
+        changed = true;
       }
       // +1/+1 and -1/-1 counters annihilate (CR 704.5q)
       for (const perm of this.battlefield) {
@@ -795,9 +850,51 @@ const gameMethods = {
     return extra;
   },
 
+  /**
+   * One representation for targets, whichever door they came through: a player
+   * is a number, a permanent or spell is the object itself. The HTTP client
+   * sends iids, the bot hands back what chooseTarget returned, and a script may
+   * pass either — resolving them once here is what makes "the Aura attaches to
+   * what it was cast on" work for every path (CR 601.2c, 303.4b).
+   */
+  canonicalTarget(t) {
+    if (t === null || t === undefined) return null;
+    if (typeof t === 'number') return t;
+    if (typeof t === 'string') {
+      const perm = this.battlefield.find((p) => p.iid === t);
+      if (perm) return perm;
+      const onStack = this.stack.find((e) => e.iid === t);
+      if (onStack) return onStack;
+      return findPermanent(this, t) || t;
+    }
+    return t;
+  },
+
   cast(playerId, card, { targets = [], x = 0, mode = null, autoTarget = false } = {}) {
     const check = this.canCast(playerId, card);
     if (!check.ok) return { ok: false, reason: check.reason };
+    targets = (targets || []).map((t) => this.canonicalTarget(t)).filter((t) => t !== null && t !== undefined);
+    // A spell that requires targets cannot be cast without legal ones (CR 601.2c).
+    // This is the guard that stops an Aura (or any targeted spell) from resolving
+    // onto the battlefield attached to nothing.
+    const reqs = isLand(card) ? [] : castTargetRequirements(cardScript(card));
+    const required = reqs.filter((r) => !r.upTo);
+    if (required.length) {
+      const ctx = { source: card, controller: playerId };
+      const chosen = targets || [];
+      if (chosen.length < required.length) {
+        return {
+          ok: false, needsTargets: true,
+          reason: reqs.length === 1 ? 'this spell needs a target' : `this spell needs ${reqs.length} targets`,
+        };
+      }
+      for (let i = 0; i < required.length; i++) {
+        const entity = chosen[i];
+        if (entity === undefined || !specMatches(this, ctx, required[i], entity)) {
+          return { ok: false, needsTargets: true, reason: 'that is not a legal target for this spell' };
+        }
+      }
+    }
     if (isLand(card)) {
       const pl = this.players[playerId];
       const idx = pl.zones.hand.indexOf(card);
@@ -832,16 +929,34 @@ const gameMethods = {
   activatableAbilities(playerId) {
     const out = [];
     for (const perm of this.controlledBy(playerId)) {
+      // abilities granted to this permanent by an Aura enchanting it
+      for (const grant of grantedAbilitiesFor(perm, this)) {
+        const costs = grant.ability.costs || {};
+        if (costs.tap && perm.tapped) continue;
+        if (costs.mana && !this.canPayMana(playerId, costs.mana)) continue;
+        if (grant.ability.condition && !grant.ability.condition(this, perm)) continue;
+        out.push({ perm, ability: grant.ability, index: grant.index, grantedBy: grant.grantedBy });
+      }
       const script = cardScript(perm);
+      // an Aura whose abilities belong to its host must not also offer them itself
+      if (script.grantsAbilitiesToHost && (perm.subtypes || []).includes('Aura')) continue;
       (script.abilities || []).forEach((ab, i) => {
         const costs = ab.costs || {};
         if (costs.tap && perm.tapped) return;
         if (costs.summoningSick && perm.summoningSick) return;
         if (costs.mana && !this.canPayMana(playerId, costs.mana)) return;
         if (costs.sacrificeSelf && perm.isCommander && false) return;
+        // "Remove a charge counter from ~:" — an ability with nothing to remove
+        // is not offered at all (Umezawa's Jitte).
+        if (costs.counters && !canPayCounters(perm, costs.counters)) return;
         if (ab.timing === 'sorcery' && !(this.activePlayer === playerId && ['main1', 'main2'].includes(this.step) && this.stack.length === 0)) return;
         if (ab.condition && !ab.condition(this, perm)) return;
-        if (ab.equip && !isCreature(perm)) return;
+        // Equip needs a creature to attach to — but the test must be "is there a
+        // creature to equip?", not "is the Equipment a creature?". Reading it the
+        // wrong way round (and with `ab.equip` as the flag, so Equip {0} slipped
+        // through) meant every Equipment with a non-zero equip cost — Jitte, the
+        // Swords, Warhammer, Boots — could never be equipped at all.
+        if (ab.equip !== undefined && !this.controlledBy(playerId).some((p) => isCreature(p))) return;
         out.push({ perm, ability: ab, index: i });
       });
     }
@@ -849,11 +964,16 @@ const gameMethods = {
   },
 
   activate(playerId, perm, ability, { targets = [], x = 0 } = {}) {
+    targets = (targets || []).map((t) => this.canonicalTarget(t)).filter((t) => t !== null && t !== undefined);
     const costs = ability.costs || {};
     if (costs.tap) { if (perm.tapped) return { ok: false, reason: 'already tapped' }; tapPermanent(this, perm); }
     if (costs.mana) { const pay = this.payMana(playerId, costs.mana); if (!pay.ok) return { ok: false, reason: pay.reason }; }
     if (costs.sacrificeSelf) sacrifice(this, perm, { reason: 'activated ability cost' });
     if (costs.life) loseLife(this, playerId, costs.life, {});
+    if (costs.counters) {
+      if (!canPayCounters(perm, costs.counters)) return { ok: false, reason: 'not enough counters' };
+      for (const [type, n] of Object.entries(costs.counters)) perm.counters[type] -= n;
+    }
     if (costs.discard) {
       const pl = this.players[playerId];
       if (pl.zones.hand.length) {
@@ -910,6 +1030,7 @@ const gameMethods = {
         // A spell that requires a target cannot be cast without one (CR 601.2c),
         // so never offer it: a button that cannot be completed is worse than no
         // button, both for the player and for a seat driven by the bot.
+        // (an optional target — "up to one target creature" — never blocks a cast)
         if (action.targetSpec && !action.optional && !(action.legalTargets || []).length) continue;
         actions.push(action);
       }
@@ -930,7 +1051,7 @@ const gameMethods = {
         act.legalTargets = legalTargets(this, { source: perm, controller: playerId }, act.targetSpec).filter((x) => x !== null);
         act.label = `Equip ${perm.name}`;
       } else {
-        this.attachTargetInfo(act, perm, playerId);
+        this.attachTargetInfo(act, perm, playerId, null, { forCast: false });
       }
       actions.push(act);
     }
@@ -938,8 +1059,8 @@ const gameMethods = {
   },
 
   /** Attach the target spec + legal target ids so the client can offer choices. */
-  attachTargetInfo(action, card, playerId, extra = null) {
-    const specs = targetRequirements(cardScript(card));
+  attachTargetInfo(action, card, playerId, extra = null, { forCast = true } = {}) {
+    const specs = forCast ? castTargetRequirements(cardScript(card)) : targetRequirements(cardScript(card));
     const spec = specs[0];
     if (!spec) return action;
     action.targetSpec = spec;

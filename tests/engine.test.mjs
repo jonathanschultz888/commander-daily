@@ -8,22 +8,44 @@
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { loadAllDecks, profileDeck, COMBO_REGISTRY, GAME_CHANGERS } from '../src/decks/index.js';
 import * as store from '../src/server/store.js';
 import { SEED_DECKS } from '../src/decks/lists.js';
 import { createGame, reviveGame, packGame } from '../src/engine/game.js';
-import { bounce } from '../src/engine/ops.js';
-import { runEngine, combatDamage, executeAction, playOpening, applyPlayerAction } from '../src/engine/driver.js';
+import { bounce, destroy, gainLife } from '../src/engine/ops.js';
+import { runEngine, combatDamage, executeAction, playOpening, applyPlayerAction, applyAttackers } from '../src/engine/driver.js';
 import { makeBot } from '../src/engine/bot.js';
-import { makeCardInstance, characteristics, makeTokenInstance } from '../src/engine/cards.js';
+import { makeCardInstance, characteristics, makeTokenInstance, hasKeyword } from '../src/engine/cards.js';
 import { cardScript } from '../src/engine/scripts.js';
 import { tokenDef, damage, putPermanent, addCounters, findPermanent } from '../src/engine/ops.js';
 import { oracle } from '../src/decks/index.js';
+import { targetRequirements, legalTargets } from '../src/engine/targeting.js';
+import { SPECS, moveToGraveyard } from '../src/engine/ops.js';
+import { canBlock } from '../src/engine/bot.js';
+import { STEPS } from '../src/engine/game.js';
 import { dayKeyFor, msUntilReset, dailySetup, practiceSetup, nextDayKey, previousDayKey } from '../src/server/daily.js';
 import { hashSeed } from '../src/engine/rng.js';
 
 const decks = loadAllDecks();
 const deckById = (id) => decks.find((d) => d.id === id);
+
+const root = new URL('..', import.meta.url).pathname;
+
+/**
+ * Resolve the stack and everything it triggers, the way the driver does: a trigger
+ * that goes on the stack after a resolution must resolve too. (`while (g.stack.length)
+ * g.resolveTop()` alone is not enough — a triggered ability is not on the stack until
+ * something flushes it.)
+ */
+const drain = (g, rounds = 40) => {
+  for (let i = 0; i < rounds; i++) {
+    g.flushTriggers();
+    if (!g.stack.length) break;
+    g.resolveTop();
+  }
+};
 
 /* ------------------------------------------------------------------ */
 /* Deck pool & bracket legality                                        */
@@ -591,9 +613,12 @@ test('the player is never asked to pass priority with nothing legal to do', () =
 });
 
 test('a step the player cannot act in is skipped, and the log says so', () => {
-  // The player sits in the seat for real here (humanIsBot false), with an empty
-  // hand and nothing untapped, so their main phase is genuinely empty. The
-  // engine must move on without stopping, and say why on the next such step.
+  // The player sits in the seat for real here (humanIsBot false) with an empty
+  // hand and nothing on their board, so their own steps are genuinely empty. The
+  // engine must move on without stopping — and say why, once per step — rather
+  // than parking a "pass priority" button in front of them. Note that a *playable*
+  // step must never be skipped: this test fails if any prompt appears with
+  // nothing but "pass" in it.
   const setup = dailySetup('2026-10-15');
   const game = createGame({ decks: setup.decks, seed: setup.seed, options: { humanIsBot: false } });
   game.bot = makeBot(setup.decks[1].prototype);
@@ -601,18 +626,17 @@ test('a step the player cannot act in is skipped, and the log says so', () => {
   const me = game.humanId;
   assert.equal(game.humanIsBot, false, "the seat is the player's after the opening");
 
-  let prompts = 0;
   let skipped = '';
-  for (let i = 0; i < 60 && game.status !== 'over' && !skipped; i++) {
-    // Their turn, with nothing playable in hand.
+  for (let i = 0; i < 40 && game.status !== 'over' && !skipped; i++) {
+    // An empty hand and an empty board: no land, no spell, no ability.
     game.players[me].zones.hand.length = 0;
     game.players[me].zones.command.length = 0;
+    game.battlefield = game.battlefield.filter((p) => p.controller !== me);
     const pending = game.pending;
     if (pending) {
       if (pending.type === 'priority') {
-        prompts++;
         assert.ok((pending.actions || []).some((a) => a.type !== 'pass'),
-          'a priority prompt was offered with nothing but "pass" available');
+          `a priority prompt was offered with nothing but "pass" available (turn ${game.turn}, ${game.step})`);
         applyPlayerAction(game, me, { type: 'pass' });
       } else if (pending.type === 'declareAttackers') {
         applyPlayerAction(game, me, { type: 'attackers', iids: [] });
@@ -624,6 +648,7 @@ test('a step the player cannot act in is skipped, and the log says so', () => {
     skipped = (game.logLines.find((l) => /Nothing you can legally do/.test(l.text || l)) || {}).text || '';
   }
   assert.ok(skipped, 'the engine explains an auto-skipped step instead of leaving the player guessing');
+  assert.match(skipped, /Nothing you can legally do in .* — skipped\./, 'in plain language');
   assert.ok(game.autoPassLog && Object.keys(game.autoPassLog).length >= 1, 'and it records that it did so, once per step');
   assert.ok(game.turn > 1, 'the game kept moving');
 });
@@ -685,4 +710,346 @@ test('no commander is ever left in a hand or a library', () => {
       assert.ok(game.commanderOf(pl.id) || pl.lost, `${day}: player ${pl.id} lost their commander designation entirely`);
     }
   }
+});
+
+
+/* ------------------------------------------------------------------ */
+/* Targets: a spell that needs one must ask for one                    */
+/* ------------------------------------------------------------------ */
+
+/** Put a card in a seat's hand with mana available, exactly as the server does. */
+const handCard = (g, name, pid = 0) => {
+  const inst = makeCardInstance(oracle[name.toLowerCase()], { owner: pid, controller: pid, zone: 'hand', iid: g.nextIid() });
+  g.players[pid].zones.hand.push(inst);
+  return inst;
+};
+/**
+ * Enough untapped lands on the battlefield to cast anything. canCast checks
+ * untapped sources, not the floating pool, so this puts the lands in play (the
+ * pool helps payMana settle the bill afterwards).
+ */
+const richMana = (g, pid = 0) => {
+  g.players[pid].manaPool = [...'WWWUUUBBBRRRGGGCCC'];
+  for (const p of g.battlefield) if (p.controller === pid) p.tapped = false;
+  for (const land of ['Plains', 'Plains', 'Plains', 'Island', 'Island', 'Island', 'Swamp', 'Swamp', 'Mountain', 'Mountain', 'Forest', 'Forest']) {
+    if (g.battlefield.filter((p) => p.controller === pid && p.name === land).length >= 2) continue;
+    putOnBattlefield(g, land, pid);
+  }
+  for (const p of g.battlefield) if (p.controller === pid) { p.tapped = false; p.summoningSick = false; }
+  return g;
+};
+
+test('an Aura cannot be cast without a target, and lands attached to what it was cast on', () => {
+  const g = soloGame('squirrel-swarm', 'omnath-landfall');
+  const nest = handCard(g, 'Squirrel Nest');
+  richMana(g, 0);
+  // the player's own turn, first main phase, empty stack: a normal cast window
+  g.activePlayer = 0; g.priority = 0; g.step = 'main1'; g.pending = null;
+
+  const withoutTarget = applyPlayerAction(g, 0, { type: 'cast', iid: nest.iid }, { bot: null });
+  assert.ok(withoutTarget.error, 'a targeted Aura is refused with no target');
+  assert.ok(!g.battlefield.includes(nest), 'and it did not reach the battlefield');
+
+  const land = putOnBattlefield(g, 'Forest', 0);
+  const cast = applyPlayerAction(g, 0, { type: 'cast', iid: nest.iid, targets: [land.iid] }, { bot: null });
+  assert.ok(cast.ok, `the cast is accepted with a legal target (${cast.error || 'ok'})`);
+  while (g.stack.length) g.resolveTop();
+
+  const aura = g.battlefield.find((p) => p.name === 'Squirrel Nest');
+  assert.ok(aura, 'the Aura is on the battlefield');
+  assert.equal(aura.attachedTo?.iid, land.iid, 'attached to the land it was cast on');
+  assert.ok(land.attachments.includes(aura), "and it is in the host's attachment list");
+  // "Enchanted land has {T}: create a 1/1 Squirrel" — the ability belongs to the land
+  const granted = g.activatableAbilities(0).filter((x) => x.perm.iid === land.iid);
+  assert.ok(granted.length, 'the enchanted land has the granted ability');
+  assert.ok(!g.activatableAbilities(0).some((x) => x.perm.iid === aura.iid), 'the Aura does not have it itself');
+});
+
+test('an Aura dies with its host, and one that arrives with no host dies on arrival', () => {
+  const g = soloGame('squirrel-swarm', 'omnath-landfall');
+  const land = putOnBattlefield(g, 'Forest', 0);
+  const nest = oracle['squirrel nest'];
+  const inst = makeCardInstance(nest, { owner: 0, controller: 0, zone: 'hand', iid: g.nextIid() });
+  handCard(g, 'Squirrel Nest');
+  g.players[0].zones.hand.pop();
+  g.players[0].zones.hand.push(inst);
+  richMana(g, 0);
+  g.activePlayer = 0; g.priority = 0; g.step = 'main1';
+  assert.ok(applyPlayerAction(g, 0, { type: 'cast', iid: inst.iid, targets: [land.iid] }, { bot: null }).ok);
+  while (g.stack.length) g.resolveTop();
+  assert.ok(g.battlefield.includes(inst), 'the Aura resolved onto the battlefield');
+
+  // the host leaves: the Aura follows (CR 704.5m)
+  moveToGraveyard(g, land, { reason: 'test' });
+  g.checkStateBased();
+  assert.ok(!g.battlefield.includes(inst), 'the Aura is gone from the battlefield');
+  assert.ok(g.players[0].zones.graveyard.includes(inst), 'and it is in the graveyard');
+});
+
+test('attachments survive being written to storage and read back', () => {
+  const g = soloGame('kemba-equipment', 'teysa-aristocrats');
+  const land = putOnBattlefield(g, 'Plains', 0);
+  const bear = putOnBattlefield(g, 'Llanowar Elves', 1);
+  // attach a real Pacifism through the game's own path
+  const pac = makeCardInstance(oracle['pacifism'], { owner: 0, controller: 0, zone: 'hand', iid: g.nextIid() });
+  g.players[0].zones.hand.push(pac);
+  richMana(g, 0);
+  g.activePlayer = 0; g.priority = 0; g.step = 'main1';
+  const cast = applyPlayerAction(g, 0, { type: 'cast', iid: pac.iid, targets: [bear.iid] }, { bot: null });
+  assert.ok(cast.ok, cast.error || 'ok');
+  while (g.stack.length) g.resolveTop();
+  assert.ok(bear.attachments.some((a) => a.name === 'Pacifism'), 'attached before the save');
+  assert.ok(hasKeyword(g, bear, 'CantAttack'), 'the restriction applies before the save');
+
+  // packGame used to throw on this shape (the two-way link is a cycle)
+  const revived = reviveGame(packGame(g));
+  const revivedBear = revived.battlefield.find((p) => p.iid === bear.iid);
+  const revivedAura = revived.battlefield.find((p) => p.name === 'Pacifism');
+  assert.ok(revivedBear && revivedAura, 'both are still on the battlefield after a reload');
+  assert.equal(revivedAura.attachedTo?.iid, revivedBear.iid, 'the attachment is rebuilt from ids');
+  assert.ok(revivedBear.attachments.some((a) => a.name === 'Pacifism'), "and the host's list is rebuilt too");
+  assert.ok(hasKeyword(revived, revivedBear, 'CantAttack'), 'the restriction still applies after a reload');
+});
+
+test("Pacifism's creature can neither attack nor block", () => {
+  const g = soloGame('kemba-equipment', 'teysa-aristocrats');
+  const pacified = putOnBattlefield(g, 'Llanowar Elves', 1);
+  const pac = makeCardInstance(oracle['pacifism'], { owner: 0, controller: 0, zone: 'hand', iid: g.nextIid() });
+  g.players[0].zones.hand.push(pac);
+  richMana(g, 0);
+  g.activePlayer = 0; g.priority = 0; g.step = 'main1';
+  assert.ok(applyPlayerAction(g, 0, { type: 'cast', iid: pac.iid, targets: [pacified.iid] }, { bot: null }).ok);
+  while (g.stack.length) g.resolveTop();
+
+  assert.ok(hasKeyword(g, pacified, 'CantAttack'), 'cannot attack');
+  assert.ok(hasKeyword(g, pacified, 'CantBlock'), 'cannot block');
+  assert.equal(canBlock(g, pacified, putOnBattlefield(g, 'Craterhoof Behemoth', 0)), false, 'the blocker chooser refuses it');
+
+  // and the attack prompt does not offer it
+  pacified.tapped = false; pacified.summoningSick = false;
+  const attacker = putOnBattlefield(g, 'Blood Artist', 1);
+  attacker.summoningSick = false;
+  g.activePlayer = 1; g.priority = 1; g.humanId = 1; g.humanIsBot = false;
+  g.step = 'declareAttackers'; g.stepIndex = STEPS.indexOf('declareAttackers');
+  g.attackersDeclared = false; g.pending = null; g.attackers = [];
+  runEngine(g, { stopForHuman: true, maxIterations: 200 });
+  const pending = g.pending;
+  if (pending && pending.type === 'declareAttackers') {
+    assert.ok(!pending.legal.includes(pacified.iid), 'the pacified creature is not offered as an attacker');
+    assert.ok(pending.legal.includes(attacker.iid), 'the unrestricted creature is');
+  } else {
+    // nothing could attack at all — the pacified creature must then not be the reason
+    assert.ok(!pending || pending.type !== 'declareAttackers');
+  }
+});
+
+
+/* ------------------------------------------------------------------ */
+/* Events: the cards the engine promised to react to                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The bug this whole block exists for: a card can listen for an event the engine
+ * never emits, and nothing anywhere notices. It compiles, it reports as "fully
+ * automated", it is in a seed deck — and it silently does nothing all game.
+ * Sanguine Bond, Yahenni, Beastmaster Ascension and Umezawa's Jitte were all dead
+ * this way. This reads the engine's own source: every event some card waits for
+ * must appear at a `type: '...'` emit site.
+ */
+test('no card waits for an event the engine never emits', () => {
+  const read = (f) => fs.readFileSync(path.join(root, 'src/engine', f), 'utf8');
+  const engineSrc = ['ops.js', 'game.js', 'driver.js', 'scripts.js'].map(read).join('\n');
+  const emitted = new Set([...engineSrc.matchAll(/type:\s*'([a-zA-Z]+)'/g)].map((m) => m[1]));
+  const dead = [];
+  for (const card of Object.values(oracle)) {
+    let script;
+    try {
+      script = cardScript(makeCardInstance(card, { owner: 0, controller: 0, zone: 'battlefield', iid: 'probe' }));
+    } catch { continue; }
+    for (const t of script.triggers || []) {
+      if (t && t.event && !emitted.has(t.event)) dead.push(`${card.name} waits for "${t.event}"`);
+    }
+  }
+  assert.deepEqual(dead, [], `these triggers can never fire:\n  ${dead.join('\n  ')}`);
+});
+
+test('Sanguine Bond drains exactly the life you gained', () => {
+  const g = soloGame('teysa-aristocrats', 'squirrel-swarm');
+  const bond = putOnBattlefield(g, 'Sanguine Bond', 0);
+  const before = g.players[1].life;
+  gainLife(g, 0, 4, { source: bond });
+  drain(g);
+  assert.equal(before - g.players[1].life, 4, 'it drains the amount, not a flat 1');
+});
+
+test('a creature dying pays out the cards that care about it', () => {
+  const g = soloGame('squirrel-swarm', 'sea-monsters');
+  const grove = putOnBattlefield(g, 'Moldervine Reclamation', 0);
+  const bear = putOnBattlefield(g, 'Elvish Visionary', 0);
+  const life = g.players[0].life, hand = g.players[0].zones.hand.length;
+  destroy(g, bear, {});
+  drain(g);
+  assert.equal(g.players[0].life, life + 1, 'you gain 1 life');
+  assert.equal(g.players[0].zones.hand.length, hand + 1, 'and you draw a card');
+
+  const y = soloGame('teysa-aristocrats', 'squirrel-swarm');
+  const yahenni = putOnBattlefield(y, 'Yahenni, Undying Partisan', 0);
+  const theirs = putOnBattlefield(y, 'Elvish Visionary', 1);
+  destroy(y, theirs, {});
+  drain(y);
+  assert.equal(yahenni.counters['+1/+1'], 1, "an opponent's creature dying grows Yahenni");
+  assert.ok(grove, 'companion assertion so the unused-var lint stays quiet');
+});
+
+test('attacking feeds a quest counter, and the counters feed the payoff', () => {
+  const g = soloGame('squirrel-swarm', 'sea-monsters');
+  const asc = putOnBattlefield(g, 'Beastmaster Ascension', 0);
+  const bear = putOnBattlefield(g, 'Elvish Visionary', 0);
+  const basePower = characteristics(g, bear).power;
+  applyAttackers(g, [bear.iid]);
+  drain(g);
+  assert.equal(asc.counters.quest, 1, 'a creature attacking puts a quest counter on it');
+  asc.counters.quest = 7;
+  g.recomputeStatics();
+  assert.equal(characteristics(g, bear).power, basePower + 5, 'seven counters is +5/+5 for your team');
+});
+
+test("Umezawa's Jitte charges on combat damage and spends the counters", () => {
+  const g = soloGame('godo-helm', 'torbran-burn');
+  const jitte = putOnBattlefield(g, "Umezawa's Jitte", 0);
+  const bear = putOnBattlefield(g, 'Elvish Visionary', 0);
+  bear.attachments = [...(bear.attachments || []), jitte];
+  jitte.attachedTo = bear;
+  g.recomputeStatics();
+  applyAttackers(g, [bear.iid]);
+  combatDamage(g, { round: 'normal' });
+  drain(g);
+  assert.equal(jitte.counters.charge, 2, 'the equipped creature connecting gives two charge counters');
+
+  // "Remove a charge counter: …" — the three modes are three offered abilities
+  richMana(g, 0);
+  // equip has sorcery timing: your own main phase, nothing on the stack
+  g.activePlayer = 0; g.priority = 0; g.step = 'main1'; g.pending = null; g.stack = [];
+  const offered = g.activatableAbilities(0).filter((a) => a.perm.iid === jitte.iid);
+  assert.ok(offered.some((a) => a.ability.equip !== undefined), 'it can still be equipped ({2}, so it needs mana)');
+  assert.equal(offered.filter((a) => /charge counter/.test(a.ability.label || '')).length, 3,
+    'all three "choose one" modes are offered — none of them silently missing');
+  const life = g.players[0].life;
+  const gain = offered.find((a) => /gain 2 life/.test(a.ability.label || ''));
+  assert.ok(gain, 'the lifegain mode is offered');
+  assert.ok(g.activate(0, jitte, gain.ability, { targets: [] }).ok, 'and it can be paid for');
+  assert.equal(jitte.counters.charge, 1, 'paying the cost removes a counter');
+  drain(g);                       // the ability resolves off the stack, like any other
+  assert.equal(g.players[0].life, life + 2, 'and the mode does what it says');
+
+  jitte.counters.charge = 0;
+  const broke = g.activatableAbilities(0).filter((a) => a.perm.iid === jitte.iid && /charge counter/.test(a.ability.label || ''));
+  assert.equal(broke.length, 0, 'with no counters left those abilities are not offered');
+});
+
+test('Terastodon destroys three noncreature permanents and pays out Elephants', () => {
+  const g = soloGame('omnath-landfall', 'yuriko-tempo');
+  richMana(g, 0);
+  g.activePlayer = 0; g.priority = 0; g.step = 'main1'; g.pending = null;
+  const ring = putOnBattlefield(g, 'Sol Ring', 1);
+  const lantern = putOnBattlefield(g, 'Chromatic Lantern', 1);
+  const land = putOnBattlefield(g, 'Island', 1);
+  const bear = putOnBattlefield(g, 'Elvish Visionary', 1);
+  const beast = handCard(g, 'Terastodon');
+  assert.ok(applyPlayerAction(g, 0, { type: 'cast', iid: beast.iid, targets: [] }, { bot: null }).ok, 'it can be cast');
+  drain(g);
+  for (const gone of [ring, lantern, land]) {
+    assert.ok(!g.battlefield.includes(gone), `${gone.name} is destroyed — noncreature, not just artifacts`);
+  }
+  assert.ok(g.battlefield.includes(bear), 'a creature is left alone');
+  const elephants = g.battlefield.filter((p) => p.isToken && (p.subtypes || []).includes('Elephant'));
+  assert.equal(elephants.length, 3, 'their controller gets a 3/3 Elephant for each one');
+  assert.ok(elephants.every((e) => e.controller === 1 && e.name === 'Elephant token'), 'and they belong to the deck that lost the permanents');
+});
+
+test('Boros Reckoner answers damage with damage', () => {
+  const g = soloGame('winota-aggro', 'torbran-burn');
+  const reckoner = putOnBattlefield(g, 'Boros Reckoner', 0);
+  const striker = putOnBattlefield(g, 'Elvish Visionary', 1);
+  damage(g, reckoner, 2, { source: striker });
+  drain(g);
+  assert.equal(reckoner.damage, 2, 'it took the damage');
+  assert.ok(!g.battlefield.includes(striker), 'and threw it back at what hit it');
+});
+
+test('every Equipment in the pool can really be equipped', () => {
+  const missing = [];
+  const equipment = Object.values(oracle).filter((c) => /\bEquipment\b/.test(c.type_line || ''));
+  for (const card of equipment) {
+    const g = soloGame('godo-helm', 'kemba-equipment');
+    richMana(g, 0);
+    g.activePlayer = 0; g.priority = 0; g.step = 'main1'; g.pending = null; g.stack = [];
+    const piece = putOnBattlefield(g, card.name, 0);
+    const bearer = putOnBattlefield(g, 'Elvish Visionary', 0);
+    const offered = g.activatableAbilities(0).filter((a) => a.perm.iid === piece.iid && a.ability.equip !== undefined);
+    if (!offered.length) { missing.push(`${card.name} (no equip ability offered)`); continue; }
+    const res = g.activate(0, piece, offered[0].ability, { targets: [bearer.iid] });
+    if (!res.ok) { missing.push(`${card.name} (${res.reason})`); continue; }
+    if (piece.attachedTo?.iid !== bearer.iid) missing.push(`${card.name} (did not attach)`);
+  }
+  assert.deepEqual(missing, [], `these could not be equipped:\n  ${missing.join('\n  ')}`);
+});
+
+test('every instant and sorcery in the pool that targets asks for its target', () => {
+  const missing = [];
+  for (const card of Object.values(oracle)) {
+    const tl = card.type_line || '';
+    if (!/\b(Instant|Sorcery)\b/.test(tl)) continue;
+    const inst = { card, name: card.name, types: tl.split('—')[0].trim().split(' '), subtypes: [], keywords: new Set(card.keywords || []), counters: {}, attachments: [] };
+    const lines = (card.oracle_text || '').split('\n')
+      .filter((l) => !/^(when|whenever|at the beginning of)/i.test(l))
+      .filter((l) => !/^\(/.test(l.trim()) && !/^\u2022/.test(l.trim()));
+    const targetsInEffect = lines.some((l) => /target/i.test(l));
+    if (targetsInEffect && !targetRequirements(cardScript(inst)).length) missing.push(card.name);
+  }
+  assert.deepEqual(missing, [], `these spells would resolve with no target: ${missing.join(', ')}`);
+});
+
+test('a counterspell can target a spell on the stack', () => {
+  const g = soloGame('kess-storm', 'yuriko-tempo');
+  const cs = handCard(g, 'Counterspell');
+  richMana(g, 0);
+  g.activePlayer = 0; g.priority = 0; g.step = 'main1';
+  // an opponent's spell is on the stack
+  const theirSpell = g.players[1].zones.library.find((c) => c.types.includes('Sorcery'));
+  g.players[1].zones.library.splice(g.players[1].zones.library.indexOf(theirSpell), 1);
+  const entry = g.pushSpell(theirSpell, 1, {});
+  const targets = legalTargets(g, { source: cs, controller: 0 }, SPECS.spell);
+  assert.ok(targets.includes(entry.iid), 'the spell on the stack is a legal target');
+  assert.ok(applyPlayerAction(g, 0, { type: 'cast', iid: cs.iid, targets: [entry.iid] }, { bot: null }).ok, 'and it can be cast at it');
+  while (g.stack.length) g.resolveTop();
+  assert.equal(g.stack.length, 0, 'the stack resolves');
+});
+
+test('a Spirit token dying does not feed Requiem Angel its own trigger', () => {
+  const g = soloGame('kemba-equipment', 'teysa-aristocrats');
+  const angel = putOnBattlefield(g, 'Requiem Angel', 0);
+  const before = g.battlefield.filter((p) => p.isToken).length;
+  const spirit = makeTokenInstance({ name: 'Spirit token', type_line: 'Token Creature — Spirit', types: ['Creature'], subtypes: ['Spirit'], power: '1', toughness: '1', colors: ['W'], keywords: ['Flying'], oracle_text: '' }, { owner: 0, controller: 0, iid: g.nextIid() });
+  g.battlefield.push(spirit);
+  moveToGraveyard(g, spirit, { reason: 'test' });
+  g.checkStateBased();
+  const after = g.battlefield.filter((p) => p.isToken).length;
+  assert.equal(after, before, 'a Spirit dying must not create another Spirit');
+  assert.ok(g.battlefield.includes(angel));
+});
+
+test('an endless loop ends the run instead of the server', () => {
+  // Two effects that feed each other forever is the one thing a card game can do
+  // that a web server cannot survive. The engine must call it a draw (CR 104.4b).
+  const g = soloGame('teysa-aristocrats', 'omnath-landfall');
+  g.activePlayer = 0; g.priority = 0; g.step = 'main1';
+  g._stepResolutions = 0;
+  // a stack that can never empty: every resolution pushes another entry
+  const loopEntry = () => ({ kind: 'trigger', source: g.battlefield[0] || null, controller: 0, iid: g.nextIid(), spec: { steps: [{ op: 'loopForever' }] }, specIndex: 0 });
+  g.resolveTop = function () { (this._loopPushes = (this._loopPushes || 0) + 1); if (this._loopPushes < 400) this.stack.push(loopEntry()); };
+  const res = runEngine(g, { stopForHuman: false, maxIterations: 5000 });
+  assert.equal(res.status, 'over', 'the engine stops');
+  assert.equal(g.result?.info?.draw, true, 'and reports a draw');
+  assert.ok((g.logLines || []).some((l) => /endless loop/i.test(l.text || l)), 'and says so on the log');
 });

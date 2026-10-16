@@ -45,6 +45,22 @@ export function specMatches(g, ctx, spec, entity) {
     if (filt.controller === 'opp' && entity === me) return false;
     return true;
   }
+  // A spell on the stack — what a counterspell targets. Stack entries are not
+  // permanents and have no zone, so they must be checked before the battlefield
+  // test below (which used to reject every one of them, leaving every
+  // counterspell in the pool permanently unable to target anything).
+  if (spec.kind === 'spell') {
+    if (!entity || entity.kind !== 'spell' || !entity.card) return false;
+    const types = entity.card.types || [];
+    const isCreatureSpell = types.includes('Creature');
+    if (filt.creature && !isCreatureSpell) return false;
+    if (filt.noncreature && isCreatureSpell) return false;
+    const me = ctx?.controller ?? ctx?.source?.controller;
+    if (filt.notController !== undefined && entity.controller === me) return false;
+    if (filt.controller === 'opp' && entity.controller === me) return false;
+    if (filt.manaValueMax !== undefined && (entity.card.cmc || 0) > filt.manaValueMax) return false;
+    return true;
+  }
   // entity is a permanent
   const p = entity;
   if (!p || p.zone !== 'battlefield') return false;
@@ -55,6 +71,7 @@ export function specMatches(g, ctx, spec, entity) {
   if (filt.land && !isLand(p)) return false;
   if (filt.artifactOrEnchantment && !(isArtifact(p) || isEnchantment(p))) return false;
   if (filt.creatureOrPlaneswalker && !(ch.isCreature || isPlaneswalker(p))) return false;
+  if (filt.artifactOrCreature && !(isArtifact(p) || ch.isCreature)) return false;
   if (filt.artifact && !isArtifact(p)) return false;
   if (filt.enchantment && !isEnchantment(p)) return false;
   if (filt.planeswalker && !isPlaneswalker(p)) return false;
@@ -62,6 +79,8 @@ export function specMatches(g, ctx, spec, entity) {
   if (filt.token && !p.isToken) return false;
   if (filt.type && !p.types.includes(filt.type)) return false;
   if (filt.subtype && !p.subtypes.includes(filt.subtype)) return false;
+  if (filt.attacking && !p.attacking) return false;
+  if (filt.blocking && !p.blocking) return false;
   if (filt.manaValueMax !== undefined && p.cmc > filt.manaValueMax) return false;
   if (filt.powerMax !== undefined && ch.power > filt.powerMax) return false;
   if (filt.powerMin !== undefined && ch.power < filt.powerMin) return false;
@@ -163,12 +182,19 @@ export function gainLife(g, playerId, n, ctx = {}) {
   const pl = g.players[playerId];
   pl.life += n;
   g.emit({ type: 'lifechange', player: playerId, amount: n, gain: true, ctx });
+  // "Whenever you gain life" (CR 119.9). The compiler and the hand scripts both
+  // listen for `youGainLife`, and nothing used to emit it — so every lifegain
+  // payoff in the pool (Sanguine Bond, and anything else printed that way) was
+  // silently inert. A 0-life gain is not a gain, so it does not trigger.
+  if (n > 0) g.emit({ type: 'youGainLife', player: playerId, amount: n, ctx });
 }
 
 export function loseLife(g, playerId, n, ctx = {}) {
   const pl = g.players[playerId];
   pl.life -= n;
   g.emit({ type: 'lifechange', player: playerId, amount: -n, gain: false, ctx });
+  // "Whenever you lose life" — same story as `youGainLife` above.
+  if (n > 0) g.emit({ type: 'youLoseLife', player: playerId, amount: n, ctx });
 }
 
 export function damage(g, targetRef, n, ctx = {}) {
@@ -221,6 +247,9 @@ export function damage(g, targetRef, n, ctx = {}) {
   g.checkStateBased();
   // "whenever this deals damage to a creature" style triggers are emitted here
   if (source && !ctx.combat) g.emit({ type: 'sourceDamageToCreature', source: source.iid, target: perm.iid, amount: n, ctx });
+  // "Whenever this creature is dealt damage" (Boros Reckoner). The event is the
+  // permanent being hurt, not the source dealing it, so the payload carries both.
+  if (n > 0) g.emit({ type: 'selfDamaged', card: perm.iid, perm: perm.iid, amount: n, source: source?.iid ?? null, controller: perm.controller, ctx });
   return n;
 }
 
@@ -311,8 +340,14 @@ export function bounce(g, perm, ctx = {}) {
 export function removeFromBattlefield(g, perm) {
   const idx = g.battlefield.indexOf(perm);
   if (idx >= 0) g.battlefield.splice(idx, 1);
-  // detach anything attached
+  // detach anything attached to it, and take it out of its own host's list
   for (const att of perm.attachments) { att.attachedTo = null; }
+  perm.attachments = [];
+  if (perm.attachedTo) {
+    const host = perm.attachedTo;
+    host.attachments = (host.attachments || []).filter((a) => a.iid !== perm.iid);
+    perm.attachedTo = null;
+  }
   perm.attachments = [];
   if (perm.attachedTo) {
     const host = perm.attachedTo;
@@ -351,6 +386,18 @@ export function putPermanent(g, card, playerId, { tapped = false, asToken = fals
   inst.enteredThisTurn = true;
   inst.summoningSick = !(inst.keywords.has('Haste'));
   g.battlefield.push(inst);
+  // An Aura enters attached to the permanent it was cast on (CR 303.4b). This has
+  // to happen before the state-based check below, which would otherwise see an
+  // Aura with no host and put it straight into the graveyard.
+  if (!asToken && (inst.subtypes || []).includes('Aura')) {
+    const host = (targets || [])
+      .map((t) => (t && typeof t === 'object' ? t : g.battlefield.find((p) => p.iid === t)))
+      .find((t) => t && t !== inst && g.battlefield.includes(t));
+    if (host) {
+      inst.attachedTo = host;
+      if (!host.attachments.includes(inst)) host.attachments.push(inst);
+    }
+  }
   g.recomputeStatics();
   g.emit({ type: 'etb', card: inst.iid, controller: playerId, isToken: inst.isToken });
   if (!asToken && g.runEnterAbility) g.runEnterAbility(inst, playerId, targets);

@@ -14,7 +14,7 @@
  * still plays (its parsable parts work) and is reported by scripts/coverage.mjs.
  */
 import { parseClause, parseTriggered, parseActivated, parseStatic, inferKeywords } from './compiler.js';
-import { SPECS, tokenDef, runEffects, pump as opPump, grantKeyword as opGrantKeyword, createTokens } from './ops.js';
+import { SPECS, tokenDef, runEffects, pump as opPump, grantKeyword as opGrantKeyword, createTokens, loseLife, permValue, destroy, damage } from './ops.js';
 import { oracle } from '../decks/index.js';
 import { characteristics, isCreature, isLand, hasKeyword, withTypes } from './cards.js';
 
@@ -302,7 +302,31 @@ export const HAND_SCRIPTS = {
   'reclamation sage': { onEnter: (g, ctx) => runSteps(g, ctx, [{ op: 'destroy', target: 'chosen', spec: 'artifactOrEnchantment' }]) },
   'acidic slime': { onEnter: (g, ctx) => runSteps(g, ctx, [{ op: 'destroy', target: 'chosen', spec: { kind: 'permanent', filter: { anyOf: [{ land: true }, { artifact: true }, { enchantment: true }] } } }]) },
   'noxious gearhulk': { onEnter: (g, ctx) => runSteps(g, ctx, [{ op: 'destroy', target: 'chosen', spec: 'creatureOpponentControls' }, { op: 'gainLife', n: 3 }]) },
-  'terastodon': { onEnter: (g, ctx) => runSteps(g, ctx, [{ op: 'destroyAll', filter: { kind: 'permanent', filter: { artifact: true, controller: 'opp' } } }]) },
+  // "When this creature enters, you may destroy up to three target noncreature
+  // permanents. For each permanent put into a graveyard this way, its controller
+  // creates a 3/3 green Elephant creature token." The old script destroyed an
+  // opponent artifact and nothing else — no lands, no enchantments, no Elephants —
+  // while still reporting as fully automated.
+  'terastodon': {
+    onEnter: (g, ctx) => {
+      const me = ctx.controller;
+      const candidates = g.battlefield
+        .filter((p) => p.controller !== me && !characteristics(g, p).isCreature)
+        .sort((a, b) => permValue(g, b) - permValue(g, a))
+        .slice(0, 3);
+      for (const perm of candidates) {
+        const controller = perm.controller;
+        destroy(g, perm, ctx);
+        // CR 603.2c "for each permanent put into a graveyard this way": only a
+        // permanent that actually died pays out, and the CONTROLLER of it — not
+        // Terastodon's controller — gets the Elephant.
+        const died = g.players[controller].zones.graveyard.some((c) => c.iid === perm.iid);
+        if (!died) continue;
+        createTokens(g, controller, tokenDef('Elephant token', 'Token Creature — Elephant', 3, 3, { colors: ['G'] }), 1, ctx);
+        g.log(`${g.players[controller].name} creates a 3/3 Elephant for ${perm.name}`);
+      }
+    },
+  },
   'grave titan': { onEnter: (g, ctx) => runSteps(g, ctx, [{ op: 'token', token: tokenDef('Zombie token', 'Token Creature — Zombie', 2, 2, { colors: ['B'] }), n: 2 }]) },
   'prime speaker zegana': {},
   'solemn simulacrum': { onEnter: (g, ctx) => runSteps(g, ctx, [{ op: 'searchBasics', n: 1, destination: 'battlefield', tapped: true }, { op: 'draw', n: 1 }]) },
@@ -340,7 +364,48 @@ export const HAND_SCRIPTS = {
   'triumph of the hordes': { steps: [{ op: 'pumpAll', filter: { kind: 'permanent', filter: { creature: true, controller: 'you' } }, power: 1, toughness: 1 }, { op: 'grantAll', filter: { kind: 'permanent', filter: { creature: true, controller: 'you' } }, keywords: ['Infect', 'Trample'] }] },
   'second harvest': { steps: [{ op: 'tokenCopyAll' }] },
   'return of the wildspeaker': { steps: [{ op: 'draw', n: 4 }, { op: 'pumpAll', filter: { kind: 'permanent', filter: { creature: true, controller: 'you', predicate: (g, p) => !characteristics(g, p).isCreature === false && !p.subtypes.includes('Human') } }, power: 3, toughness: 3 }] },
-  'beastmaster ascension': { statics: [{ kind: 'ptBonus', appliesTo: { creature: true, controller: 'you' }, power: 5, toughness: 5, condition: (g, perm) => (perm.counters.quest || 0) >= 7 }], questCounters: 'attack' },
+  // Beastmaster Ascension: "Whenever a creature you control attacks, you may put a
+  // quest counter on this enchantment. As long as it has seven or more, creatures
+  // you control get +5/+5." The static half was here all along and a `questCounters`
+  // flag hinted at the rest — but nothing ever read that flag, so the counters never
+  // arrived and the payoff was unreachable.
+  'beastmaster ascension': {
+    statics: [{ kind: 'ptBonus', appliesTo: { creature: true, controller: 'you' }, power: 5, toughness: 5, condition: (g, perm) => (perm.counters.quest || 0) >= 7 }],
+    triggers: [{
+      event: 'creatureAttacks',
+      match: (g, self, ev) => ev.controller === self.controller,
+      steps: [{ op: 'counter', target: 'self', counterType: 'quest', n: 1 }],
+    }],
+  },
+  // "Whenever a creature you control dies, you gain 1 life and draw a card." The
+  // clause parser read the first half and dropped the draw.
+  'moldervine reclamation': {
+    triggers: [{
+      event: 'permanentDies',
+      match: (g, self, ev) => ev.controller === self.controller,
+      steps: [{ op: 'gainLife', n: 1 }, { op: 'draw', n: 1 }],
+    }],
+  },
+  // "Whenever this creature is dealt damage, it deals that much damage to any target."
+  // "That much" needs the number the trigger fired with, which now rides along on
+  // the trigger's context. The engine points it at the best target for its
+  // controller: their biggest creature, else their face — never back at itself,
+  // which would loop.
+  'boros reckoner': {
+    triggers: [{
+      event: 'selfDamaged',
+      match: (g, self, ev) => ev.card === self.iid || ev.perm === self.iid,
+      steps: [(g, ctx) => {
+        const n = ctx.event?.amount || 0;
+        if (!n || !ctx.source) return;
+        const me = ctx.source.controller;
+        const theirs = g.battlefield.filter((p) => p.controller !== me && characteristics(g, p).isCreature);
+        const target = theirs.sort((a, b) => permValue(g, b) - permValue(g, a))[0] || g.other(me);
+        g.log(`${ctx.source.name} throws ${n} damage back`);
+        damage(g, target, n, { source: ctx.source });
+      }],
+    }],
+  },
   'parallel lives': { tokenDoubler: true },
   'doubling season': { tokenDoubler: true, counterDoubler: true },
   'anointed procession': { tokenDoubler: true, filter: (def) => def.types?.includes('Creature') || /\bCreature\b/.test(def.type_line || '') },
@@ -408,10 +473,31 @@ export const HAND_SCRIPTS = {
   },
   'teysa karlov': {
     static: [{ kind: 'deathTriggerDoubler' }],
-    triggers: [{ event: 'permanentDied', match: (g, self, ev) => ev.controller === self.controller, steps: [{ op: 'token', token: tokenDef('Spirit token', 'Token Creature — Spirit', 1, 1, { colors: ['W'], keywords: ['Flying'] }), n: 1 }] }],
+    // "another non-Spirit creature you control dies" — without the Spirit check a
+    // Spirit token dying re-triggers this, and with any repeatable sacrifice
+    // outlet (Grave Pact, a free outlet) that is an infinite loop the engine can
+    // never finish.
+    triggers: [{
+      event: 'permanentDied',
+      match: (g, self, ev) => {
+        if (ev.controller !== self.controller || ev.card === self.iid) return false;
+        const died = diedCardFor(g, ev);
+        return !(died && (died.subtypes || []).includes('Spirit'));
+      },
+      steps: [{ op: 'token', token: tokenDef('Spirit token', 'Token Creature — Spirit', 1, 1, { colors: ['W'], keywords: ['Flying'] }), n: 1 }],
+    }],
   },
+  // "Whenever you gain life, target opponent loses that much life." It used to
+  // always drain exactly 1, whatever the gain was.
   'sanguine bond': {
-    triggers: [{ event: 'youGainLife', match: (g, self, ev) => ev.player === self.controller, steps: [{ op: 'loseLife', who: 'opponent', n: 1 }] }],
+    triggers: [{
+      event: 'youGainLife',
+      match: (g, self, ev) => ev.player === self.controller,
+      steps: [(g, ctx) => {
+        const n = ctx.event?.amount || 0;
+        if (n > 0 && ctx.source) loseLife(g, g.other(ctx.source.controller), n, ctx);
+      }],
+    }],
   },
   'wurmcoil engine': {
     onDeath: (g, ctx) => runSteps(g, ctx, [
@@ -478,7 +564,17 @@ export const HAND_SCRIPTS = {
   'phyrexian altar': { abilities: [{ costs: { sacrificeCreature: true }, steps: [{ op: 'addMana', color: 'C', n: 1 }], label: 'Sacrifice a creature: add one mana of any color', isMana: true }] },
   'viscera seer': { abilities: [{ costs: { sacrificeCreature: true }, steps: [{ op: 'scryLike', n: 1 }], label: 'Sacrifice a creature: scry 1' }] },
   'carrion feeder': { abilities: [{ costs: { sacrificeCreature: true }, steps: [{ op: 'counter', target: 'self', counterType: '+1/+1', n: 1 }], label: 'Sacrifice a creature: +1/+1 counter' }] },
-  'yahenni, undying partisan': { abilities: [{ costs: { sacrificeCreature: true }, steps: [{ op: 'counter', target: 'self', counterType: '+1/+1', n: 1 }, { op: 'grant', target: 'self', keywords: ['Indestructible'] }], label: 'Sacrifice a creature: +1/+1 and indestructible' }] },
+  // Yahenni: the sac outlet was written here, the death trigger somewhere else —
+  // and a duplicated key means only the last one is a script at all, so the trigger
+  // silently did nothing. Both halves now live in one entry.
+  'yahenni, undying partisan': {
+    abilities: [{ costs: { sacrificeCreature: true }, steps: [{ op: 'counter', target: 'self', counterType: '+1/+1', n: 1 }, { op: 'grant', target: 'self', keywords: ['Indestructible'] }], label: 'Sacrifice a creature: +1/+1 and indestructible' }],
+    triggers: [{
+      event: 'permanentDies',
+      match: (g, self, ev) => ev.controller === g.other(self.controller),
+      steps: [{ op: 'counter', target: 'self', counterType: '+1/+1', n: 1 }],
+    }],
+  },
   'woe strider': { abilities: [{ costs: { sacrificeCreature: true }, steps: [{ op: 'scryLike', n: 1 }], label: 'Sacrifice a creature: scry 1' }] },
   'skullclamp': { static: [{ kind: 'equip', bonus: { power: 1, toughness: -1 }, drawOnDeath: 2 }], abilities: [{ equip: 1, costs: { mana: { generic: 1 } }, label: 'Equip {1}', timing: 'sorcery' }] },
   'sword of vengeance': { static: [{ kind: 'equipGrant', keywords: ['First strike', 'Vigilance', 'Trample'], bonus: { power: 2, toughness: 1 } }], abilities: [{ equip: 3, costs: { mana: { generic: 3 } }, label: 'Equip {3}', timing: 'sorcery' }] },
@@ -490,7 +586,25 @@ export const HAND_SCRIPTS = {
   'sword of fire and ice': { statics: [{ kind: 'equipGrant', bonus: { power: 2, toughness: 2 }, protection: ['R', 'U'] }], abilities: [{ equip: 2, costs: { mana: { generic: 2 } }, label: 'Equip {2}', timing: 'sorcery' }] },
   'sword of feast and famine': { statics: [{ kind: 'equipGrant', bonus: { power: 2, toughness: 2 }, protection: ['B', 'G'] }], abilities: [{ equip: 2, costs: { mana: { generic: 2 } }, label: 'Equip {2}', timing: 'sorcery' }] },
   'sword of light and shadow': { statics: [{ kind: 'equipGrant', bonus: { power: 2, toughness: 2 }, protection: ['W', 'B'] }], abilities: [{ equip: 2, costs: { mana: { generic: 2 } }, label: 'Equip {2}', timing: 'sorcery' }] },
-  'umezawa\'s jitte': { statics: [{ kind: 'equipGrant', bonus: { power: 0, toughness: 0 } }], abilities: [{ equip: 2, costs: { mana: { generic: 2 } }, label: 'Equip {2}', timing: 'sorcery' }, { costs: { removeCounters: 'charge' }, steps: [{ op: 'pump', target: 'chosen', spec: 'creature', power: 2, toughness: 2 }], label: 'Remove a charge counter: +2/+2' }] },
+  // Umezawa's Jitte. The charge counters themselves were never given out (nothing
+  // emitted the event the trigger waited for) and the cost was written as
+  // `removeCounters`, which no part of the engine understood. The three "choose one"
+  // modes are three abilities, so the player picks the mode by picking the chip
+  // instead of the engine silently implementing one of them.
+  'umezawa\'s jitte': {
+    statics: [{ kind: 'equipGrant', bonus: { power: 0, toughness: 0 } }],
+    triggers: [{
+      event: 'dealsDamage',
+      match: (g, self, ev) => ev.source === self.iid || (self.attachedTo && ev.source === self.attachedTo.iid),
+      steps: [{ op: 'counter', target: 'self', counterType: 'charge', n: 2 }],
+    }],
+    abilities: [
+      { equip: 2, costs: { mana: { generic: 2 } }, label: 'Equip {2}', timing: 'sorcery' },
+      { costs: { counters: { charge: 1 } }, condition: (g, perm) => !!perm.attachedTo, steps: [(g, ctx) => { const host = ctx.source?.attachedTo; if (host) opPump(g, host, 2, 2, ctx, 'eot'); }], label: 'Remove a charge counter: equipped creature gets +2/+2' },
+      { costs: { counters: { charge: 1 } }, target: 'creature', steps: [{ op: 'pump', target: 'chosen', power: -1, toughness: -1 }], label: 'Remove a charge counter: target creature gets -1/-1' },
+      { costs: { counters: { charge: 1 } }, steps: [{ op: 'gainLife', n: 2 }], label: 'Remove a charge counter: you gain 2 life' },
+    ],
+  },
   'fireshrieker': { statics: [{ kind: 'equipGrant', keywords: ['Double strike'] }], abilities: [{ equip: 2, costs: { mana: { generic: 2 } }, label: 'Equip {2}', timing: 'sorcery' }] },
   'basilisk collar': { statics: [{ kind: 'equipGrant', keywords: ['Deathtouch', 'Lifelink'] }], abilities: [{ equip: 1, costs: { mana: { generic: 1 } }, label: 'Equip {1}', timing: 'sorcery' }] },
   'embercleave': { statics: [{ kind: 'equipGrant', bonus: { power: 2, toughness: 2 }, keywords: ['Trample', 'Double strike'] }], abilities: [{ equip: 3, costs: { mana: { generic: 3 } }, label: 'Equip {3}', timing: 'sorcery' }] },
@@ -596,7 +710,6 @@ export const HAND_SCRIPTS = {
   'greater good': { abilities: [{ costs: { sacrificeCreature: true }, steps: [{ op: 'draw', n: 3 }, { op: 'discard', n: 3 }], label: 'Sacrifice a creature: draw 3' }] },
   'zuran_orb': {},
   'titania, protector of argoth': { triggers: [{ event: 'youSacrificed', match: (g, self, ev) => ev.player === self.controller && g.players[self.controller].zones.graveyard.some((c) => false), steps: [{ op: 'token', token: tokenDef('Elemental token', 'Token Creature — Elemental', 5, 3, { colors: ['G'] }), n: 1 }] }] },
-  'terastodon_': {},
   'mirrorpool': {},
   'sylvan library': { triggers: [{ event: 'drawStep', match: (g, self, ev) => ev.player === self.controller, steps: [{ op: 'draw', n: 2 }] }] },
 
@@ -651,6 +764,12 @@ export function buildScript(card) {
   const script = {
     ...hand,                       // tokenDoubler, damageMultiplier, extraLandDrops, scry, ...
     name: data.name || card.name,
+    oracle: text,                  // the card's own rules text (targeting reads "Enchant ..." from it)
+    typeLine: data.type_line || '',
+    isAura: /\bAura\b/.test(data.type_line || ''),
+    // "Enchanted land has \"{T}: ...\"" — the ability belongs to the enchanted
+    // permanent, not to the Aura (CR 303.4 applies continuous effects to the host).
+    grantsAbilitiesToHost: /Enchanted [a-z]+ has "/i.test(text),
     mana: [...(hand.mana || [])],
     abilities: [...(hand.abilities || []), ...(hand.abilities ? [] : parseActivated(text, data))],
     triggers: [...(hand.triggers || [])],
@@ -747,6 +866,24 @@ function genericTriggerMatch(t) {
       const atk = g.battlefield.find((p) => p.iid === ev.card);
       return !!atk && atk.controller === self.controller;
     }
+    // "Whenever a creature you control attacks": one trigger per attacker, and
+    // only for the controller's own creatures (Beastmaster Ascension).
+    if (t.event === 'creatureAttacks') {
+      const atk = g.battlefield.find((p) => p.iid === ev.card);
+      return !!atk && atk.controller === self.controller;
+    }
+    // "Whenever this creature is dealt damage" (Boros Reckoner): the event names
+    // the permanent that was hurt, so only its own source matches.
+    if (t.event === 'selfDamaged') return ev.card === self.iid || ev.perm === self.iid;
+    // "Whenever this creature deals damage": the equipped creature counts, since
+    // the equipment's trigger belongs to whatever it is attached to.
+    if (t.event === 'dealsDamage') {
+      const src = g.battlefield.find((p) => p.iid === ev.source);
+      if (!src) return false;
+      if (src.iid === self.iid) return true;
+      return (self.attachments || []).some((a) => a.iid === src.iid)
+        || (src.attachments || []).some((a) => a.iid === self.iid);
+    }
     if (t.event === 'permanentDies' || t.event === 'permanentEntered') {
       const p = g.battlefield.find((x) => x.iid === (ev.card || ev.iid)) || g.players.flatMap((pl) => pl.zones.graveyard).find((c) => c.iid === ev.card);
       if (f.other && p?.iid === self.iid) return false;
@@ -769,12 +906,50 @@ export function triggerSpecsFor(perm) {
 }
 
 /** Continuous effects contributed by a permanent. */
+/**
+ * Abilities an Aura grants to what it enchants. An Aura with
+ * "Enchanted land has \"{T}: ...\"" has no activated ability of its own — the
+ * enchanted land does, and tapping it is what pays the cost.
+ */
+export function grantedAbilitiesFor(host, game) {
+  const out = [];
+  for (const att of host.attachments || []) {
+    if (att.zone !== 'battlefield') continue;
+    const script = cardScript(att);
+    if (!script.grantsAbilitiesToHost) continue;
+    (script.abilities || []).forEach((ability, index) => out.push({ perm: host, ability, index, grantedBy: att }));
+  }
+  return out;
+}
+
+/**
+ * The card that just died, for a trigger that has to inspect it. `permanentDied`
+ * carries an iid, and by trigger time the permanent is in a graveyard — so this
+ * looks it up by id across the zones rather than trusting the event payload.
+ */
+export function diedCardFor(game, ev) {
+  if (!ev || !ev.card) return null;
+  for (const pl of game.players) {
+    for (const zone of ['graveyard', 'battlefield', 'exile']) {
+      const found = (pl.zones[zone] || []).find((c) => c.iid === ev.card);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 export function staticModsFor(perm, game) {
   const script = cardScript(perm);
   const mods = [];
+  // An Aura's continuous effects apply to the creature it enchants, so for an
+  // Aura "self" means its host (CR 303.4). An unattached Aura contributes
+  // nothing at all -- and a state-based action puts it into the graveyard.
+  const isAura = !!script.isAura || (perm.subtypes || []).includes('Aura');
+  const subject = isAura ? perm.attachedTo : perm;
   for (const s of script.statics || []) {
     if (s.kind === 'ptBonus') {
       const applies = (target) => {
+        if (s.appliesTo.self) return !!subject && target.iid === subject.iid;
         if (target.iid === perm.iid && !s.includeSelf) return false;
         if (s.appliesTo.controller === 'you' && target.controller !== perm.controller) return false;
         const ch = characteristics(game, target);
@@ -786,7 +961,7 @@ export function staticModsFor(perm, game) {
       mods.push({ kind: 'ptBonus', applies, power: s.power, toughness: s.toughness, source: perm });
     } else if (s.kind === 'keywordGrant') {
       const applies = (target) => {
-        if (s.appliesTo.self) return target.iid === perm.iid;
+        if (s.appliesTo.self) return !!subject && target.iid === subject.iid;
         if (s.appliesTo.controller === 'you' && target.controller !== perm.controller) return false;
         const ch = characteristics(game, target);
         if (s.appliesTo.creature && !ch.isCreature) return false;
@@ -799,6 +974,19 @@ export function staticModsFor(perm, game) {
     } else if (s.kind === 'moon') {
       // Blood Moon: nonbasic lands are Mountains
       mods.push({ kind: 'addTypes', applies: (t) => isLand(t) && t.iid !== perm.iid, addTypes: ['Mountain'], source: perm, bloodMoon: true });
+    } else if (s.kind === 'cannotAttack' || s.kind === 'cannotBlock' || s.kind === 'unblockable') {
+      // Attacking and blocking restrictions become keywords, so the one place
+      // that decides combat legality (canBlock, the attacker filter) is the one
+      // place that has to know about them.
+      const keywords = s.kind === 'unblockable' ? ['Unblockable']
+        : s.kind === 'cannotAttack' ? ['CantAttack'] : ['CantBlock'];
+      mods.push({
+        kind: 'keywordGrant',
+        applies: (target) => !!subject && target.iid === subject.iid,
+        keywords,
+        source: perm,
+        restriction: true,
+      });
     } else if (s.kind === 'sacOnDeath' || s.kind === 'deathTriggerDoubler') {
       mods.push({ kind: s.kind, applies: () => true, source: perm });
     }

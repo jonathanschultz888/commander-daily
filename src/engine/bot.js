@@ -12,7 +12,7 @@
  */
 import { cardScript } from './scripts.js';
 import { characteristics, isCreature, isLand, hasKeyword } from './cards.js';
-import { chooseTarget, targetRequirements } from './targeting.js';
+import { chooseTarget, targetRequirements, castTargetRequirements } from './targeting.js';
 import { permValue, findPermanent, specMatches, SPECS, legalTargets } from './ops.js';
 
 const isRemoval = (card) => /destroy target|exile target|deals? \d+ damage to (?:any|target|each)/i.test(card.oracle_text || '');
@@ -100,7 +100,10 @@ export function makeBot(prototype = 'midrange') {
     /** Attach targets to a chosen action. */
     withTargets(game, pid, action, card) {
       const script = cardScript(card);
-      const specs = targetRequirements(script);
+      // A cast is answered by the spell's own targets; an activation by the
+      // ability's. Mixing the two used to hand a land the targets of an ability
+      // it was not using.
+      const specs = action.type === 'cast' ? castTargetRequirements(script) : targetRequirements(script);
       if (!specs.length) return { ...action, targets: [] };
       const targets = [];
       for (const spec of specs) {

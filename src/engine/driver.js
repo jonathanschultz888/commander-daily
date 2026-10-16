@@ -85,6 +85,7 @@ function isInstantSpeedAction(game, pid, a) {
 
 /** Say once per step why the game moved on without asking anything. */
 function noteNoPlay(game, stepName) {
+  // The step is skipped rather than offered as an empty prompt.
   const log = game.autoPassLog || (game.autoPassLog = {});
   const key = `${game.turn}:${stepName}`;
   if (log[key]) return;
@@ -126,10 +127,10 @@ function priorityWindow(game, bot, options) {
         game.pending = { type: 'priority', player: pid, actions };
         return 'awaiting';
       }
-      // Nothing legal for them here: skip the window entirely (no prompt, no
-      // validation) and say so on their own turn so a quiet turn doesn't read
-      // as a bug. Once per step — the log is not a turn-by-turn transcript.
-      if (game.activePlayer === game.humanId) noteNoPlay(game, game.step);
+      // Nothing legal for them here: the window is skipped rather than offered as
+      // a prompt whose only button is "pass". It is noted on the log once per
+      // step, on the player's own turn, so a quiet turn does not read as a bug.
+      if (!meaningful.length && game.activePlayer === game.humanId) noteNoPlay(game, game.step);
     }
 
     // Bot (or the human seat during the scripted opening) acts
@@ -147,6 +148,17 @@ function priorityWindow(game, bot, options) {
     if (!alreadyPassed) st.passed.push(pid);
     if (st.passed.length >= 2) {
       if (game.stack.length) {
+        // A safety valve for the one thing a card game can do that a server
+        // cannot survive: loop. Two effects that keep feeding each other (a
+        // token that dies into a token that dies) would otherwise spin here
+        // forever and take the whole process with it. A loop nobody can break
+        // is a draw (CR 104.4b), and a draw ends the run cleanly.
+        game._stepResolutions = (game._stepResolutions || 0) + 1;
+        if (game._stepResolutions > MAX_RESOLUTIONS_PER_STEP) {
+          game.log(`The engine stopped an endless loop after ${MAX_RESOLUTIONS_PER_STEP} effects and called the game a draw`);
+          game.finish(null, { draw: true, reason: 'unbreakable loop (CR 104.4b)' });
+          return 'stepDone';
+        }
         game.resolveTop();
         st.passed = [];
         game.priority = game.activePlayer;
@@ -343,7 +355,8 @@ function declareAttackers(game, bot, options) {
   const pid = game.activePlayer;
   const humanSeat = pid === game.humanId && !game.humanIsBot;
   const legal = game.creaturesControlledBy(pid).filter((c) =>
-    !c.tapped && (!c.summoningSick || hasKeyword(game, c, 'Haste')) && !hasKeyword(game, c, 'Defender') && characteristics(game, c).power > 0);
+    !c.tapped && (!c.summoningSick || hasKeyword(game, c, 'Haste')) && !hasKeyword(game, c, 'Defender')
+    && !hasKeyword(game, c, 'CantAttack') && characteristics(game, c).power > 0);
 
   if (!legal.length) return 'done';
   if (humanSeat && options.stopForHuman) {
@@ -366,6 +379,10 @@ function declareAttackers(game, bot, options) {
       perm.attackedThisTurn = true;
       perm.tapped = true;
       game.emit({ type: 'attacks', card: iid, controller: pid, name: perm.name });
+      // "Whenever a creature you control attacks" is compiled as `creatureAttacks`
+      // while "whenever THIS attacks" is `attacks`; both are emitted, once per
+      // attacking creature (CR 508.3c: one trigger per attacker, per declaration).
+      game.emit({ type: 'creatureAttacks', card: iid, controller: pid, name: perm.name });
     }
   }
   if (attackers.length) game.log(`${game.players[pid].name} attacks with ${attackers.length} creature(s)`);
@@ -384,12 +401,21 @@ export function applyAttackers(game, iids) {
     perm.attackedThisTurn = true;
     perm.tapped = true;
     game.emit({ type: 'attacks', card: iid, controller: pid, name: perm.name });
+    game.emit({ type: 'creatureAttacks', card: iid, controller: pid, name: perm.name });
   }
   if (iids.length) game.log(`${game.players[pid].name} attacks with ${iids.length} creature(s)`);
   game.pending = null;
   game.checkStateBased();
   return game;
 }
+
+/**
+ * How many effects one step may resolve before the engine calls it a loop. Real
+ * triggers can chain — a board wipe with a dozen death triggers, a storm turn —
+ * but a chain this long with no player decision in between is a cycle, not a
+ * big turn.
+ */
+const MAX_RESOLUTIONS_PER_STEP = 150;
 
 function declareBlockers(game, bot, options) {
   if (game.blocksDeclared) return 'done';
@@ -459,6 +485,7 @@ export function combatDamage(game) {
         damage(game, target, atkCh.power, { source: atk, combat: true, round });
         recordCommanderDamage(game, atk, target, atkCh.power);
         game.emit({ type: 'combatDamageToPlayer', source: atk.iid, player: target, amount: atkCh.power, controller: atk.controller });
+        game.emit({ type: 'dealsDamage', source: atk.iid, player: target, amount: atkCh.power, combat: true, controller: atk.controller });
         continue;
       }
       // Damage assignment (CR 510.1): lethal to each blocker in order, then the
@@ -466,7 +493,6 @@ export function combatDamage(game) {
       let remaining = atkCh.power;
       const trample = atkCh.keywords.has('Trample');
       const deathtouch = atkCh.keywords.has('Deathtouch');
-      const lifelink = atkCh.keywords.has('Lifelink');
       const lethalm = blockers.map((b) => {
         if (deathtouch) return 1;                       // 1 damage is lethal with deathtouch
         const bt = characteristics(game, b).toughness - b.damage;
@@ -491,6 +517,7 @@ export function combatDamage(game) {
         damage(game, target, remaining, { source: atk, combat: true, round });
         recordCommanderDamage(game, atk, target, remaining);
         game.emit({ type: 'combatDamageToPlayer', source: atk.iid, player: target, amount: remaining, controller: atk.controller });
+        game.emit({ type: 'dealsDamage', source: atk.iid, player: target, amount: remaining, combat: true, controller: atk.controller });
       }
       // blockers hit back
       for (const b of blockers) {
@@ -501,7 +528,9 @@ export function combatDamage(game) {
         if (b.damage >= bch.toughness && !bch.keywords.has('Double strike')) continue;
         damage(game, atk, bch.power, { source: b, combat: true, round });
       }
-      if (lifelink) game.emit({ type: 'youGainLife', player: atk.controller, amount: 0 });
+      // (No synthetic `youGainLife` here: lifelink damage already flows through
+      // damage() -> gainLife(), which emits the real amount. A second event with
+      // amount 0 would double-trigger every "whenever you gain life" payoff.)
     }
   };
 

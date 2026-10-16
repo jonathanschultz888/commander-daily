@@ -384,7 +384,18 @@ export function parseStatic(text, card) {
     }
     // "X can't block" / "can't be blocked"
     if (/can'?t be blocked/.test(lc)) { statics.push({ kind: 'unblockable', appliesTo: { self: true } }); continue; }
-    if (/can'?t attack or block|can'?t block/.test(lc)) { statics.push({ kind: 'cannotBlock', appliesTo: { self: true } }); continue; }
+    // Restrictions on the card's own body, or on the creature it enchants:
+    // "Enchanted creature can't attack or block." That line is the whole of
+    // Pacifism, and reading only "can't block" out of it used to leave the
+    // creature free to attack — while applying it to the Aura itself.
+    const selfSubject = /^(~|this creature|this permanent|enchanted creature|equipped creature|it)\s+can'?t\s/;
+    if (selfSubject.test(lc)) {
+      const attacks = /can'?t (?:attack|attack or block)/.test(lc);
+      const blocks = /can'?t (?:block|attack or block)/.test(lc);
+      if (attacks) statics.push({ kind: 'cannotAttack', appliesTo: { self: true } });
+      if (blocks) statics.push({ kind: 'cannotBlock', appliesTo: { self: true } });
+      if (attacks || blocks) continue;
+    }
     // Cost reducers
     m = lc.match(/(creature|artifact|instant|sorcery|[a-z]+) spells? you cast cost \{(\d+)\} less/);
     if (m) { statics.push({ kind: 'costReducer', cardType: m[1], amount: +m[2] }); continue; }

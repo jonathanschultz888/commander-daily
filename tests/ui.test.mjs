@@ -193,3 +193,58 @@ test('the client never uses native dialogs, which iframes block', () => {
   assert.ok(/askConfirm\(\{[\s\S]{0,200}Concede this run/.test(code), 'conceding asks in the page');
   assert.ok(/askConfirm\(\{[\s\S]{0,200}Leave the board/.test(code), 'leaving the board asks in the page');
 });
+
+test('a card on the table shows its artwork and its rules text', () => {
+  // The complaint that started this: hand cards rendered as a name and nothing
+  // else. Two causes, both in the stylesheet — the art was faded to 38% and the
+  // rules text was switched off entirely on narrow screens.
+  const art = css.match(/\.card \.art \{([^}]*)\}/);
+  assert.ok(art, '.card .art exists');
+  const opacity = art[1].match(/opacity:\s*([\d.]+)/);
+  assert.ok(!opacity || Number(opacity[1]) >= 0.9, `artwork must not be washed out (opacity: ${opacity && opacity[1]})`);
+  assert.ok(/background-size:\s*cover/.test(art[1]), 'and it is drawn to fill the card');
+  assert.ok(/\.card \.art::after/.test(css), 'with a scrim so the text on top stays readable');
+
+  // Nothing anywhere may hide the rules text — media query or otherwise.
+  for (const m of css.matchAll(/\.card \.text[^{]*\{([^}]*)\}/g)) {
+    assert.ok(!/display:\s*none/.test(m[1]), 'the rules text is never hidden');
+  }
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.ok(!/\.slice\(0, 190\)/.test(app), 'the client no longer truncates card text to 190 characters');
+  assert.ok(/function trimOracle|trimOracle\(/.test(app), 'card text goes through trimOracle');
+  assert.ok(/oracle_text/.test(app), 'and it is the real oracle text');
+});
+
+test('the pass-priority and action controls live in the middle of the table', () => {
+  // They used to sit in the sidebar, which on a phone is a bottom sheet: passing
+  // priority meant opening a sheet and scrolling. Everything pressable is now in
+  // the prompt dock between the two boards.
+  assert.ok(!/id="btnPass"/.test(html), 'the sidebar no longer carries the pass button');
+  assert.ok(/id="promptBar"/.test(html), 'the dock exists');
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const bar = app.slice(app.indexOf('function renderPromptBar'), app.indexOf('/**', app.indexOf('function renderPromptBar') + 10));
+  assert.ok(/dock-actions/.test(bar), 'priority actions render into the dock');
+  assert.ok(/dock-chip/.test(bar), 'as buttons');
+  assert.ok(/dockPass/.test(bar), 'with pass priority in the same place');
+  assert.ok(/declareAttackers/.test(bar) && /declareBlockers/.test(bar), 'combat prompts keep their home there');
+  const prompt = css.match(/\.prompt-bar \{([^}]*)\}/);
+  assert.ok(prompt, '.prompt-bar is styled');
+  assert.ok(/position:\s*sticky/.test(prompt[1]), 'the dock sticks to the viewport');
+  assert.ok(/z-index/.test(prompt[1]), 'and stacks above the boards');
+});
+
+test('a player can report a card, and the client shows the engine verdict', () => {
+  // "There must be a player-facing way to report a card behaving incorrectly, and
+  // the system checks the correct behaviour." The affordance lives on the card
+  // inspector (where a player is already looking at the card) and the answer is
+  // rendered in the page — never a native dialog, which iframes block.
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.ok(/id="btnReportCard"/.test(app), 'the inspector offers a report button');
+  assert.ok(/function reportCard\(/.test(app), 'and there is a report flow');
+  assert.ok(/api\/report-card/.test(app), 'which posts to the report endpoint');
+  assert.ok(/name: card\.name/.test(app), 'naming the card it is about');
+  assert.ok(/function reportVerdictHtml\(/.test(app), 'the verdict is rendered as markup');
+  assert.ok(/out\.findings/.test(app), 'including the engine findings, not just a thank-you');
+  // the styles it relies on exist
+  assert.ok(/\.report-row\b/.test(css) && /\.report-verdict\b/.test(css), 'and it is styled');
+});

@@ -49,7 +49,7 @@ if ((KV_URL || KV_TOKEN) && !(KV_URL && KV_TOKEN)) {
 function normalise(data) {
   const base = emptyStore();
   const out = { ...base, ...(data && typeof data === 'object' ? data : {}) };
-  for (const key of ['runs', 'votes', 'sessions', 'community']) {
+  for (const key of ['runs', 'votes', 'sessions', 'community', 'corrections']) {
     if (!out[key] || typeof out[key] !== 'object' || Array.isArray(out[key])) out[key] = {};
   }
   if (!Array.isArray(out.leaderboard)) {
@@ -57,12 +57,14 @@ function normalise(data) {
       ? Object.values(out.leaderboard)   // recover entries written as a map
       : [];
   }
+  if (!Array.isArray(out.reports)) out.reports = [];
   if (!out.meta || typeof out.meta !== 'object') out.meta = { created: new Date().toISOString() };
   return out;
 }
 
 const emptyStore = () => ({
   runs: {}, leaderboard: [], votes: {}, sessions: {}, community: {},
+  reports: [], corrections: {},
   meta: { created: new Date().toISOString() },
 });
 
@@ -317,4 +319,46 @@ export function leaderboardStats(dayKey) {
   const avg = total ? Math.round(day.reduce((a, e) => a + e.points, 0) / total) : 0;
   const best = day[0]?.points || 0;
   return { total, wins, winRate: total ? Math.round((wins / total) * 100) : 0, avg, best };
+}
+
+/* ---------------- player reports & corrections ---------------- */
+
+/**
+ * A report is kept whether or not it turns into a correction, and a correction is
+ * keyed by card name so a second report about the same card refines one entry
+ * instead of piling up duplicates.
+ */
+export function addReport(report) {
+  store.reports = Array.isArray(store.reports) ? store.reports : [];
+  store.reports.push({ ...report, at: report.at || new Date().toISOString() });
+  if (store.reports.length > 500) store.reports = store.reports.slice(-500);
+  save();
+  return report;
+}
+
+export function listReports(limit = 50) {
+  return (store.reports || []).slice(-limit).reverse();
+}
+
+export function correctionFor(name) {
+  return (store.corrections || {})[String(name || '').toLowerCase()] || null;
+}
+
+export function putCorrection(name, patch) {
+  const key = String(name || '').toLowerCase();
+  store.corrections = store.corrections || {};
+  const prev = store.corrections[key] || { name, reports: 0, targets: [], note: '' };
+  store.corrections[key] = {
+    ...prev,
+    ...patch,
+    name,
+    reports: (prev.reports || 0) + 1,
+    at: new Date().toISOString(),
+  };
+  save();
+  return store.corrections[key];
+}
+
+export function corrections() {
+  return Object.values(store.corrections || {});
 }

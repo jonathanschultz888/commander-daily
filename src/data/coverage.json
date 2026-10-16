@@ -1,15 +1,15 @@
 {
-  "generated": "2026-10-15T18:49:02.929Z",
+  "generated": "2026-10-15T21:08:49.825Z",
   "decks": 10,
   "uniqueCards": 462,
   "counts": {
-    "scripted": 315,
-    "compiled": 70,
+    "scripted": 317,
+    "compiled": 69,
     "vanilla": 34,
-    "partial": 34,
+    "partial": 33,
     "unhandled": 9
   },
-  "fullyAutomated": 419,
+  "fullyAutomated": 420,
   "pct": 91,
   "topUnparsed": [
     {
@@ -463,13 +463,6 @@
       "status": "partial",
       "unsupported": [
         "look at that player's hand."
-      ]
-    },
-    {
-      "name": "Boros Reckoner",
-      "status": "partial",
-      "unsupported": [
-        "it deals that much damage to any target."
       ]
     },
     {

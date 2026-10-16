@@ -279,20 +279,31 @@ server imports them at boot, and a missing module is a crash on deploy, not a si
 ```
 public/index.html          public/app.js            public/style.css
 src/server/server.js       src/server/daily.js      src/server/store.js
-src/server/verifyDeck.js   (NEW — imported by server.js)
+src/server/verifyDeck.js   src/server/importDeck.js
 src/engine/driver.js       src/engine/game.js       src/engine/ops.js
-src/data/coverage.json
+src/engine/scripts.js      src/engine/compiler.js   src/engine/targeting.js
+src/engine/corrections.js  (NEW — the card-report overlay, imported by
+                            server.js AND targeting.js; without it the server
+                            does not boot)
+src/engine/bot.js          src/engine/cards.js      src/engine/rng.js
+src/engine/score.js        src/decks/index.js       src/decks/lists.js
+src/data/oracle.json       src/data/gamechangers.json
+src/data/coverage.json     src/data/validation.json
 package.json               README.md                SETUP.md        .env.example
-scripts/run-tests.mjs      (NEW)   scripts/sweep.mjs (NEW)
-tests/engine.test.mjs      tests/ui.test.mjs        tests/community.test.mjs (NEW)
+scripts/run-tests.mjs      scripts/sweep.mjs        scripts/simall.mjs
+tests/engine.test.mjs      tests/ui.test.mjs        tests/community.test.mjs
 ```
+
+Anything under `src/` that you are unsure about: upload it. The whole thing is 58 files and ~270 KB
+compressed, and every module under `src/` is reachable from the server's import graph — a missing file
+is a crash on boot, never a quiet degradation.
 
 Command line, if you have the repo cloned (fastest of all — and it cannot miss a file):
 
 ```bash
 cd /path/to/your/clone
 rsync -av --delete   --exclude '.git' --exclude 'node_modules' --exclude 'data' --exclude '*.zip'   ~/commander-daily/ ./
-git add -A && git commit -m "Board zones, tabs, deck upload, auto-skip, commander-zone fix"
+git add -A && git commit -m "Hand cards show art + rules text, one action dock, target gating, report-a-card"
 git push
 ```
 
