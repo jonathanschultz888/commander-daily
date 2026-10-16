@@ -298,8 +298,13 @@ test('a card states its own power, toughness, keywords and counters', () => {
 
 test('blocking can be assigned in either order, and the pair is visible', () => {
   const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-  // both halves of the pair respond to a tap
-  assert.ok(/declareBlockers' && p\.id === S\.view\.humanId/.test(app), 'both the attacker and the blocker are clickable');
+  // Both halves of the pair respond to a tap. This assertion used to pin the
+  // guard `declareBlockers' && p.id === S.view.humanId`, which is exactly the bug
+  // (it wired only your own side, so the attacker could never be tapped): the
+  // branch has to run on both boards and let the role checks do the filtering.
+  assert.ok(!/declareBlockers' && p\.id === S\.view\.humanId/.test(app),
+    'the block branch is not limited to your own permanents');
+  assert.ok(/declareBlockers'\)\s*\{/.test(app), 'both the attacker and the blocker are clickable');
   assert.ok(/onBlockerTap/.test(app), 'which runs the block chooser');
   assert.ok(/role: isMyCreature \? 'blocker' : 'attacker'/.test(app),
     'and the chooser knows which half it is holding, so order does not matter');
@@ -338,4 +343,173 @@ test('a card can be reviewed on the fly, and the check runs again on demand', ()
   assert.ok(/function cardCheck/.test(app), 'the client has the screen');
   assert.ok(/Check this card again/.test(app), 'with a button that runs the check again');
   assert.ok(/How does this card work/.test(app), 'and a way in from the card sheet');
+});
+
+
+/* ------------------------------------------------------------------ */
+/* Round 5: the rail leaves sideways, the cards got bigger, tokens     */
+/* pile up, the command zone and the graveyard are readable, and a     */
+/* search opens a sheet over the field                                 */
+/* ------------------------------------------------------------------ */
+
+test('folding the rail retracts it sideways instead of leaving a column of headers', () => {
+  const round4 = css.indexOf('body.rail-hidden .sidebar { display: none; }');
+  const round5 = css.indexOf('display: grid; overflow: hidden; width: 38px;');
+  assert.ok(round4 > -1, 'round 4 hid the rail outright');
+  assert.ok(round5 > round4, 'and round 5 takes over that rule, after it');
+  const block = css.slice(css.lastIndexOf('body.rail-hidden .sidebar {', round5), css.indexOf('}', round5));
+  assert.ok(/display:\s*grid/.test(block),
+    'a later rule cannot undo a property it does not declare: `display` must be restated or the rail stays display:none');
+  assert.ok(/body\.rail-hidden \.sidebar > \*:not\(\.game-strip\)\s*\{[^}]*transform:\s*translateX/.test(css),
+    'the panels are translated off the right edge');
+  assert.ok(/body\.rail-hidden \.game \{ grid-template-columns: minmax\(0, 1fr\) 38px/.test(css),
+    'and the board takes the width the rail was using');
+  assert.ok(/body\.rail-hidden \.sidebar \.strip-btn \.btn-text \{ display: none/.test(css),
+    'what is left is a slim icon strip');
+  assert.ok(/\.rail-peek/.test(css) && /id="railPeek"/.test(html),
+    'and a tab on the edge of the table to bring the panels back');
+});
+
+test('the permanents on the table are bigger than the cards in hand, and whole', () => {
+  const handSize = css.match(/\.card \{\s*--card-w: 100px; --card-h: 140px;/);
+  assert.ok(handSize, 'the hand keeps its size');
+  // The size lives on the player's section now, and the board cards inherit it: a
+  // variable declared on `.card` itself cannot be overridden by a value inherited
+  // from above it, so `--card-w: inherit` is what makes the section's size win.
+  const table = css.match(/\.side \{ --card-w: (\d+)px; --card-h: (\d+)px; \}/);
+  assert.ok(table, 'the section declares the size of the cards standing in it');
+  assert.ok(Number(table[1]) > 100 && Number(table[2]) > 140,
+    `a permanent is drawn bigger than a card in hand (${table[1]}x${table[2]})`);
+  assert.ok(/\.zone-cards \.card \{ --card-w: inherit; --card-h: inherit; \}/.test(css),
+    'and the cards take that size rather than their own');
+  assert.ok(/\.zone-cards \.card \+ \.card \{ margin-left: -9px; \}/.test(css),
+    'the overlap between permanents is halved so the name stays readable');
+  // The bug this pins: a 166px card in a 129px lane, with the wrapper's
+  // overflow:hidden cutting off exactly the bottom of the card — the printed P/T.
+  assert.ok(/\.side \.board \{ min-height: calc\(var\(--card-h\) \+ 2\.6rem\); \}/.test(css),
+    'the board cannot shrink below one card plus its label');
+  assert.ok(/@media \(max-height: 800px\) \{\s*\.side \{ --card-w: 96px; --card-h: 134px; \}/.test(css),
+    'short windows still shrink the table rather than scroll it');
+  assert.ok(/@media \(max-width: 720px\) \{\s*\.side \{ --card-w: 92px; --card-h: 128px; \}/.test(css),
+    'and a phone shrinks it further');
+  assert.ok(/\.zone-cards \{ scrollbar-width: thin; \}/.test(css) &&
+    /\.zone-cards::-webkit-scrollbar \{ height: 8px; \}/.test(css),
+    'a lane that scrolls sideways reserves a thin scrollbar, not a 15px slab over the cards');
+});
+
+test('identical tokens draw as one pile that is still selectable per token', () => {
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.ok(/const stackKey = \(c\) => \{/.test(app), 'tokens are keyed by what makes them identical');
+  assert.ok(/if \(!c\.isToken\) return null;/.test(app), 'only tokens pile up — two real cards never merge');
+  assert.ok(/stack-group/.test(app) && /stack-count/.test(app), 'the pile is one face with a count badge');
+  assert.ok(/×\$\{group\.cards\.length\}/.test(app), 'and the badge says how many are in it');
+  assert.ok(/const pips = el\('div', 'stack-pips'\)/.test(app) && /el\('button', 'stack-pip'/.test(app),
+    'with one chip per token underneath');
+  assert.ok(/pip\.dataset\.token = c\.iid/.test(app), 'each chip is a specific token, by id');
+  assert.ok(/wire\(c, pip\)/.test(app),
+    'and answers every click the card face answers: target, attack, block, sacrifice, activate');
+  assert.ok(/const on = mine\.every\(\(c\) => S\.attackers\.has\(c\.iid\)\)/.test(app),
+    'the pile face is the whole pile: clicking it attacks with all of it');
+  // 17px square, on a dark bar so a light chip reads on any artwork: at 13px on
+  // dark token art the chips were there but invisible.
+  assert.ok(/\.stack-pip \{[\s\S]{0,240}min-width: 17px; min-height: 17px/.test(css),
+    'the chips are big enough to hit');
+  assert.ok(/\.stack-pips \{[\s\S]{0,400}linear-gradient\(to top/.test(css),
+    'and sit on a dark bar so they are legible over the token\'s art');
+});
+
+test('the command zone is always on screen, and the graveyard shows its top card', () => {
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.ok(/const cmd = p\.command \|\| \[\];/.test(app), 'the command zone is read on every render');
+  assert.ok(/command zone empty/.test(app) && /is on the battlefield/.test(app),
+    'an empty command zone says so, and says where the commander is');
+  assert.ok(/tax \+\$\{cmd\[0\]\.castFromCommandZone\}/.test(app), 'a commander in the zone shows its tax');
+  assert.ok(/const grave = p\.graveyard \|\| \[\];/.test(app) && /⚰ \$\{grave\.length\}/.test(app),
+    'the graveyard shows its size');
+  assert.ok(/\$\{top \? ` · \$\{esc\(top\.name\)\}` : ''\}/.test(app), 'and the top card of the pile');
+  assert.ok(/\.pile\.cmd \{/.test(css) && /\.pile\.grave\.live \{/.test(css), 'both are drawn as their own kind of pile');
+  const server = fs.readFileSync(new URL('../src/server/server.js', import.meta.url), 'utf8');
+  assert.ok(/castFromCommandZone/.test(server), 'the view carries the commander tax');
+});
+
+test('a search opens a sheet over the field listing every legal card', () => {
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.ok(/function renderChoice\(\)/.test(app), 'the client draws the engine\'s question');
+  assert.ok(/const m = S\.view\?\.modal;/.test(app), 'driven by view.modal');
+  assert.ok(/function chooseHtml/.test(app) && /\.choose-grid/.test(css), 'the search sheet is a grid of card faces');
+  assert.ok(/not a legal pick/.test(app) && /class="choose-rest"/.test(app),
+    'the cards that are not legal picks are still inspectable, in a folded list');
+  assert.ok(/choose-ask/.test(app) && /Pick \$\{need - sel\.length\} more/.test(app),
+    'and a multi-card search says how many are still to pick');
+  assert.ok(/await sendAction\(\{ type: 'choose', picks: sel\.picks \}\)/.test(app),
+    'answering posts a choose action');
+  assert.ok(/function topXHtml/.test(app) && /data-flip/.test(app), '"look at the top N" draws two rows');
+  assert.ok(/topLabel/.test(app) && /mini-move/.test(app),
+    'with the order shown left to right and arrows to reorder');
+  assert.ok(/await sendAction\(\{ type: 'choose', picks: sel\.top, top: sel\.top, bottom: sel\.bottom \}\)/.test(app),
+    'and the answer is the order the spell dictates');
+  assert.ok(/if \(S\.view\?\.modal\) return;/.test(app),
+    'a question from the engine cannot be dismissed with Escape or a backdrop click');
+  const server = fs.readFileSync(new URL('../src/server/server.js', import.meta.url), 'utf8');
+  assert.ok(/function decorateModal/.test(server), 'the server turns the engine\'s card ids into card faces');
+  assert.ok(/modal: game\.modal \? decorateModal\(game, game\.modal\) : null/.test(server), 'and ships them in the view');
+});
+
+test('the engine asks the human seat and nobody else', () => {
+  const ops = fs.readFileSync(new URL('../src/engine/ops.js', import.meta.url), 'utf8');
+  assert.ok(/export function askChoice/.test(ops), 'there is one place a seat is asked to pick');
+  assert.ok(/const humanSeat = playerId === g\.humanId && g\.interactive === true && !g\.humanIsBot;/.test(ops),
+    'only the human seat, only after the takeover, only in a game a person is playing');
+  assert.ok(/export class DeferResolution/.test(ops), 'and the suspension it needs is explicit');
+  assert.ok(/export function resumeDeferred/.test(ops), 'the rest of the effect resumes after the answer');
+  assert.ok(/export function rebuildPendingChoice/.test(ops),
+    'a question can be re-created from data, so a reload does not lose it');
+  const driver = fs.readFileSync(new URL('../src/engine/driver.js', import.meta.url), 'utf8');
+  assert.ok(/case 'choose':/.test(driver), 'the choose action travels the same path as every other action');
+  assert.ok(/if \(game\.modal\) return \{ status: 'awaiting' \};/.test(driver), 'and the world stops while the player decides');
+  const server = fs.readFileSync(new URL('../src/server/server.js', import.meta.url), 'utf8');
+  assert.ok(/game\.interactive = !game\.humanIsBot && game\.status !== 'over';/.test(server),
+    'the human seat only starts answering after the scripted opening');
+});
+
+test('both halves of a block are clickable — the attacker is not filtered to your own permanents', () => {
+  // The hands-on-table freeze in reverse: blocking "worked" only for the half of
+  // the pair that lives on your side. The branch that wires a creature for a block
+  // was guarded with `p.id === S.view.humanId`, so an attacking creature — always a
+  // permanent on the opponent's board — never received the class or the click
+  // handler, and neither tap order could ever complete a pair.
+  const app = fs.readFileSync(path.join(root, 'public/app.js'), 'utf8');
+  const start = app.indexOf("else if (S.pending?.type === 'declareBlockers'");
+  assert.ok(start > 0, 'the blocking branch exists');
+  const branch = app.slice(start, start + 900);
+  const condition = branch.slice(0, branch.indexOf(') {'));
+  assert.ok(!/p\.id === S\.view\.humanId/.test(condition),
+    'the block branch must run on both sides of the table, not only on yours');
+  assert.match(branch, /isAttacker = \(S\.pending\.attackers \|\| \[\]\)\.includes\(c\.iid\)/);
+  assert.match(branch, /isMyCreature = p\.id === S\.view\.humanId && \(S\.pending\.blockers \|\| \[\]\)\.includes\(c\.iid\)/);
+  // and the handler itself has to accept either order
+  const tap = fs.readFileSync(path.join(root, 'public/app.js'), 'utf8');
+  const fn = tap.slice(tap.indexOf('function onBlockerTap'), tap.indexOf('function cardNameFor'));
+  assert.match(fn, /const blocker = isMyCreature \? iid : pick;/);
+  assert.match(fn, /const attacker = isAttacker \? iid : pick;/);
+});
+
+test('the search sheet takes its clothes off when it closes', () => {
+  // `renderChoice` dressed `#modal` in `.choice-sheet` and nothing undressed it, so
+  // after one search every ordinary pop-up — card menu, block confirm, threat
+  // review, points tracker, the card report — came up as a top-aligned sheet with
+  // no ✕ and the sheet's scroll box. Two classes, two places to clear them.
+  const app = fs.readFileSync(path.join(root, 'public/app.js'), 'utf8');
+  const open = app.slice(app.indexOf('function openModal'), app.indexOf('function closeModal'));
+  assert.ok(/\$\('#modal'\)\.classList\.remove\('choice-sheet'\);/.test(open),
+    'an ordinary pop-up drops the sheet class before it draws');
+  const close = app.slice(app.indexOf('function closeModal'), app.indexOf('function closeModal') + 600);
+  assert.ok(/\$\('#modal'\)\.classList\.remove\('choice-sheet'\);/.test(close),
+    'and closing clears it too');
+  assert.ok(/S\.choice = null;/.test(close), 'and the local selection goes with it');
+  assert.ok(/\$\('#modal'\)\.classList\.add\('choice-sheet'\);/.test(app),
+    'while the sheet itself still wears it');
+  // Escape and the backdrop must still be refused while the engine is waiting
+  assert.ok(/if \(S\.view\?\.modal\) return;/.test(close),
+    'the refusal to dismiss an engine question comes first');
 });

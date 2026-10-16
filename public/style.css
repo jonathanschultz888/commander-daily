@@ -746,7 +746,7 @@ body.game-active .topbar { display: none; }
      screen and then clipped by `overflow: hidden` — nothing scrolled, and the
      right-hand lane was simply unreachable. */
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 0.92fr) auto minmax(0, 1.22fr);
+  grid-template-rows: minmax(auto, 0.8fr) auto minmax(auto, 1.45fr);
   gap: .3rem; min-height: 0; height: 100%; padding-bottom: 0;
 }
 .side { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: .3rem .45rem; background: transparent; border: 0; }
@@ -1247,3 +1247,246 @@ body.rail-hidden .sidebar { display: none; }
   display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pile-row, .hand-row { min-width: 0; }
+
+
+/* ==========================================================================
+   ROUND 5 — a foldable rail that really leaves, bigger cards, token piles,
+   and the sheet that shows what a search is allowed to find
+   ========================================================================== */
+
+/* ---- 1. folding the rail means the rail goes away ------------------------
+   Round 4 folded each panel, which still left a column of folded headers down
+   the right edge taking the width the board wanted. The panels now retract
+   sideways — off the right edge, clipped by the table — and only a slim strip
+   of icons stays behind to bring them back. */
+body.rail-hidden .game { grid-template-columns: minmax(0, 1fr) 38px; }
+body.rail-hidden .sidebar {
+  /* `display` matters: round 4's rule took the rail out of the layout entirely,
+     and a later rule cannot undo a property it does not declare. */
+  display: grid; overflow: hidden; width: 38px;
+  grid-template-columns: 38px; grid-template-rows: auto; align-content: start;
+}
+body.rail-hidden .sidebar > *:not(.game-strip) {
+  width: 260px; max-width: 260px;      /* keeps its shape while it slides out */
+  transform: translateX(108%);
+  opacity: 0; pointer-events: none;
+  transition: transform .28s cubic-bezier(.4, 0, .2, 1), opacity .2s ease;
+}
+body.rail-hidden .sidebar .game-strip {
+  flex-direction: column; align-items: center; gap: .2rem; padding: .3rem .2rem;
+}
+body.rail-hidden .sidebar .strip-btn .btn-text { display: none; }
+body.rail-hidden .sidebar .game-strip .clock-value,
+body.rail-hidden .sidebar .game-strip .strip-label { display: none; }
+/* the way back in: a tab on the edge of the table, always in the same place */
+.rail-peek {
+  position: fixed; right: 0; top: 50%; transform: translateY(-50%);
+  z-index: 40; display: none; align-items: center; gap: .25rem;
+  padding: .55rem .3rem; border-radius: 12px 0 0 12px;
+  background: color-mix(in srgb, var(--panel) 88%, var(--accent) 12%);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-right: 0;
+  color: var(--accent); font: inherit; font-size: .72rem; font-weight: 800; cursor: pointer;
+  writing-mode: vertical-rl;
+}
+.rail-peek:hover { color: var(--text); border-color: var(--accent); }
+/* the slim icon strip is the way back on a wide screen; the edge tab is for
+   phones, where the whole dock folds away with nothing left to click */
+body.rail-hidden .rail-peek { display: none; }
+
+/* ---- 2. more card on the table -------------------------------------------
+   The board is the game: the permanents get a bigger face than the cards in
+   hand, the overlap between them is halved so the name and the rules text of
+   every permanent in a row stay readable, and the lanes give back the room the
+   folded rail just freed. */
+.zone-cards .card { --card-w: 112px; --card-h: 156px; }
+/* A card may never be taller than the lane it stands in: the printed P/T and the
+   bottom of the rules text live in the last few pixels of a card, and a lane that
+   is the first thing to starve, so the board card's height is what the lane has to
+   hold: 118x166 left 2px of the card outside it (the bottom of the rules text and
+   the printed P/T box). These sizes were measured with the card animations settled
+   — a card caught mid-animation measures ~30% too big, which is how an earlier
+   round of this work convinced itself the cards were 155x190. */
+/* The size lives on the player's section, not on the card, because the section's own
+   row has to be able to reserve room for it: `.side .board { min-height: ... }` below
+   is what stops the board from being squeezed to a 75px letterbox on a short screen
+   (the failure mode before this: cards the right size, in a lane too short to hold
+   them, with the wrapper's overflow:hidden cutting off the printed P/T). The hand is
+   a fan of its own size — it sets its own variables, so it does not inherit these. */
+.side { --card-w: 112px; --card-h: 148px; }
+/* the card takes the size from the section (a variable declared on the card itself
+   would beat anything inherited from above it) */
+.zone-cards .card { --card-w: inherit; --card-h: inherit; }
+/* The board is a flex item with `min-height: 0`, so on a short screen it shrank until
+   the lanes were 75px tall and every card was a letterbox sliver. A floor of "one
+   card plus its label plus a scrollbar" is what keeps the cards whole: the section
+   cannot get shorter than its own content, and the table's rows (minmax(auto, …))
+   then have to give it the room. */
+.side .board { min-height: calc(var(--card-h) + 2.6rem); }
+.zone-cards { scrollbar-width: thin; }
+.zone-cards::-webkit-scrollbar { height: 8px; }
+.zone-cards::-webkit-scrollbar-thumb { background: #33465a; border-radius: 99px; }
+.zone-cards::-webkit-scrollbar-track { background: transparent; }
+.zone-cards .card + .card { margin-left: -9px; }
+.zone-cards .card .text { font-size: .52rem; }
+.zone-cards .card .name { font-size: .6rem; }
+.zone-cards .card .kw { font-size: .46rem; }
+/* A shorter screen has less to give the board, and the hand is a claim on the same
+   column: both give way together, so the player's own rows still draw their cards
+   whole rather than as letterbox slivers. */
+@media (max-height: 800px) {
+  .side { --card-w: 96px; --card-h: 134px; }
+  .hand-row.fan { --card-w: 92px; --card-h: 118px; min-height: calc(118px + .9rem); }
+}
+@media (max-height: 680px) {
+  .side { --card-w: 88px; --card-h: 122px; }
+  .hand-row.fan { --card-w: 84px; --card-h: 106px; min-height: calc(106px + .8rem); }
+  .zone-cards .card + .card { margin-left: -12px; }
+}
+@media (max-width: 1000px) {
+  .side { --card-w: 100px; --card-h: 140px; }
+  .zone-cards .card + .card { margin-left: -8px; }
+}
+@media (max-width: 720px) {
+  .side { --card-w: 92px; --card-h: 128px; }
+  .hand-row.fan { --card-w: 92px; --card-h: 116px; min-height: calc(116px + .8rem); }
+}
+
+/* ---- 3. identical tokens are a pile -------------------------------------
+   A pile draws as one card face with a ×N badge and a numbered chip for each
+   token in it. The chips are the individual tokens — every click the card face
+   answers to (target, attack, block, sacrifice, activate) works per token. */
+.stack-group { position: relative; display: flex; flex-direction: column; align-items: center; }
+.stack-group .stack-face { box-shadow: 0 3px 10px rgba(0,0,0,.5), 4px 3px 0 -1px #16202a, 8px 6px 0 -2px #0e151d; }
+.stack-count {
+  position: absolute; top: -.35rem; right: -.35rem; z-index: 6;
+  background: var(--accent); color: #0b0f14; font-weight: 900; font-size: .62rem;
+  border-radius: 999px; padding: .02rem .32rem; border: 1px solid #0b0f14;
+  box-shadow: 0 2px 6px rgba(0,0,0,.5);
+}
+.stack-pips {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 6;
+  display: flex; gap: .15rem; flex-wrap: wrap; justify-content: center;
+  padding: .16rem .2rem .2rem;
+  /* a dark bar under the chips, so a light chip stays legible on any artwork */
+  background: linear-gradient(to top, rgba(6, 10, 14, .94), rgba(6, 10, 14, .55) 70%, rgba(6, 10, 14, 0));
+}
+.stack-pip {
+  font: inherit; font-size: .58rem; font-weight: 900; line-height: 1;
+  min-width: 17px; min-height: 17px; cursor: pointer;
+  background: #e8f0f7; color: #101820;
+  border: 1px solid #0b0f14; border-radius: 5px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.65);
+}
+.stack-pip:hover { border-color: var(--accent); color: #fff; transform: translateY(-1px); }
+.stack-pip.on { background: var(--accent); color: #0b0f14; border-color: #0b0f14; }
+.stack-pip.attacking { box-shadow: 0 0 0 2px var(--bad); }
+.stack-pip.legal { box-shadow: 0 0 0 2px var(--good); }
+
+/* ---- 4. the graveyard and the command zone are part of the table -------- */
+.pile.grave.live { border-color: color-mix(in srgb, var(--muted) 60%, transparent); color: #dfe7ef; }
+.pile.cmd { border-color: color-mix(in srgb, #c9a227 65%, transparent); color: #f0d98a; font-weight: 700; }
+.pile.cmd.spent { color: var(--muted); border-color: var(--line); font-weight: 500; }
+.pile.cmd.live { cursor: pointer; }
+.pile.cmd.live:hover { border-color: #c9a227; }
+
+/* ---- 5. the choice sheet: a search, a look at the top, a discard -------- */
+#modal.choice-sheet { max-width: min(96vw, 940px); width: min(96vw, 940px); max-height: 74dvh; overflow-y: auto; }
+/* the ✕ would be a lie: the engine is waiting for an answer, so there is no
+   way to close this one (closeModal refuses too) */
+#modal.choice-sheet .modal-close { display: none; }
+/* the sheet stays above the hand: the hand is the thing the player is reading
+   while they decide, so a search never sits on top of it */
+#modalBackdrop:has(#modal.choice-sheet) { align-items: flex-start; padding-top: 1.4dvh; }
+.choose-block { display: flex; flex-direction: column; gap: .55rem; }
+.choose-head h1 { margin: 0 0 .2rem; font-size: 1.06rem; }
+.choose-ask { margin: .25rem 0 0; font-size: .78rem; font-weight: 700; color: var(--accent); }
+.choose-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: .4rem; max-height: 40vh; overflow-y: auto; padding: .1rem;
+}
+.choose-grid.wide { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); max-height: 26vh; }
+.choose-grid.dim { opacity: .68; }
+.choose-card { position: relative; cursor: pointer; transition: transform .12s ease; }
+.choose-card .card {
+  /* a real Magic card is 63x88: a tile with that ratio is the only one the art
+     window (200% / 50% 19%) frames the way it frames a card on the table */
+  --card-w: 100%; --card-h: auto;
+  width: 100%; height: auto; aspect-ratio: 63 / 88;
+}
+.choose-card:hover { transform: translateY(-4px); }
+.choose-card:hover .card { border-color: var(--accent); }
+.choose-card.picked .card { outline: 3px solid var(--accent); outline-offset: 1px; }
+.choose-tick {
+  position: absolute; top: -.3rem; left: -.3rem; z-index: 5;
+  background: var(--accent); color: #0b0f14; font-weight: 900; font-size: .7rem;
+  border-radius: 999px; width: 18px; height: 18px; display: grid; place-items: center;
+  border: 1px solid #0b0f14;
+}
+.choose-card.not-legal { cursor: not-allowed; }
+.choose-card.not-legal .card { filter: grayscale(.75); }
+.choose-tag {
+  position: absolute; bottom: -.2rem; left: 50%; transform: translateX(-50%);
+  background: #3b1d1d; color: #ffc9c9; border: 1px solid #7a3d3d; border-radius: 999px;
+  font-size: .5rem; font-weight: 700; padding: .02rem .3rem; white-space: nowrap;
+}
+.choose-rest { border: 1px dashed var(--line); border-radius: 12px; padding: .3rem .5rem; }
+.choose-rest > summary { cursor: pointer; font-size: .74rem; color: var(--muted); }
+.choose-foot {
+  display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+  border-top: 1px solid var(--line); padding-top: .5rem;
+}
+.choose-foot .muted { flex: 1; }
+.choose-rows { display: flex; flex-direction: column; gap: .5rem; }
+.choose-row { border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 12px; padding: .35rem .45rem; }
+.choose-row.bottom { border-color: var(--line); }
+.choose-row-label { font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: .3rem; }
+.choose-card .move { display: flex; justify-content: center; gap: .15rem; margin-top: .18rem; }
+.mini-move {
+  font: inherit; font-size: .55rem; padding: .05rem .3rem; cursor: pointer;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 5px;
+}
+.mini-move:hover:not([disabled]) { border-color: var(--accent); }
+.mini-move[disabled] { opacity: .3; cursor: default; }
+
+/* the sheets never cover the hand: the hand is the one thing the player reads */
+@media (max-width: 720px) {
+  .choose-grid { grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); max-height: 34vh; }
+  .choose-card .card { --card-h: auto; }
+  .choose-grid.wide { max-height: 24vh; }
+  #modal.choice-sheet { max-height: 92dvh; overflow-y: auto; }
+  body.rail-hidden .game { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 0; }
+  body.rail-hidden .sidebar { width: auto; height: 0; max-height: 0; }
+  /* On a phone the rail is a dock under the table with nothing left of it when
+     folded: a 2px sliver of the points panel used to peek above the bottom edge. */
+  body.rail-hidden .sidebar > *:not(.game-strip) { transform: translateX(60%); visibility: hidden; }
+  body.rail-hidden .sidebar .game-strip { display: none; }
+  body.rail-hidden .rail-peek { display: flex; }
+}
+
+/* The player's own rows are the ones that starve: they share their column with the
+   hand, the piles and the chips, and on a short screen that left the board 75px
+   tall — cards drawn as letterbox slivers. The furniture gives way first: the hand
+   header goes, and the chips and pile rows tighten up, so the board keeps the
+   height its cards need. */
+/* A rotated fan card hangs a few px below its own row: without the room, the lowest
+   card in the hand was shaved by the panel it lives in (phone: card bottom 836,
+   panel 828). Give the fan floor and padding for its own tilt. */
+@media (max-width: 720px) {
+  .hand-row.fan { min-height: calc(var(--card-h) + 2.05rem); padding-bottom: .72rem; }
+}
+@media (max-height: 800px) {
+  .hand-row.fan { min-height: calc(var(--card-h) + 1.75rem); padding-bottom: .6rem; }
+}
+
+/* A short screen is not the only place the furniture crowds the board: a phone is
+   844px tall and still has to hold the hand, the chips and three lanes. Same deal
+   there — the header of the hand and the padding around the rows give way first. */
+@media (max-height: 800px), (max-width: 720px) {
+  .hand-head { display: none; }
+  .side-head { padding: 0; }
+  .side-head .player-chip strong { font-size: .82rem; }
+  .avatar { width: 24px; height: 24px; }
+  .life-total { font-size: 1.25rem; }
+  .zone-row { padding: .2rem 0; }
+  .pile-row { min-height: 0; }
+}

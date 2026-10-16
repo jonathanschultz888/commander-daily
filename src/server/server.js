@@ -98,6 +98,10 @@ function makeRun({ mode, setup, tokenHash }) {
 
   // Play the opening, then hand the human a turn with a real decision in it.
   playOpening(game);
+  // From here on the human seat answers its own questions through the modal
+  // (a search, a scry, a discard). During the opening the bot plays that seat,
+  // so no question is asked and the takeover stays exactly as scripted.
+  game.interactive = !game.humanIsBot && game.status !== 'over';
   // Worth logging: this is the one moment that decides what the player will see,
   // and it is the thing most likely to differ between two installs of a day.
   console.log(`[run] ${mode} seed=${setup.seed} ${setup.humanDeck.id} vs ${setup.botDeck.id}`
@@ -149,6 +153,9 @@ function cardView(card, { hidden = false } = {}) {
     keywords: [...(card.keywords || data.keywords || [])],
     keywordsPrinted: [...(card.keywords || data.keywords || [])],
     isCommander: !!card.isCommander, isToken: !!card.isToken,
+    // how many times the commander has been cast from the command zone: the tax
+    // is the one number a player needs to see *before* they try to cast it again
+    castFromCommandZone: card.castFromCommandZone || 0,
     unsupported: script.unsupported.length ? script.unsupported.length : 0,
   };
 }
@@ -180,6 +187,43 @@ function permView(game, perm) {
     attachments: perm.attachments.map((a) => a.iid), equippedTo: perm.attachedTo?.iid || null,
     isLand: ch.types.includes('Land'),
   };
+}
+
+/** Every card in the run, by iid: a modal can name cards from any zone. */
+function findAnyCard(game, iid) {
+  for (const p of game.players) {
+    for (const zone of ['library', 'hand', 'graveyard', 'exile', 'command']) {
+      const hit = (p.zones[zone] || []).find((c) => c.iid === iid);
+      if (hit) return hit;
+    }
+  }
+  const perm = game.battlefield.find((c) => c.iid === iid);
+  if (perm) return perm;
+  const entry = (game.stack || []).find((e) => e.iid === iid);
+  return entry?.card || null;
+}
+
+/**
+ * A question the engine is waiting on, in the shape the client draws: the cards
+ * are named by id in the engine (state stays serializable) and turned into card
+ * faces here, where the deck's oracle data already lives.
+ */
+function decorateModal(game, modal) {
+  const look = (iids) => (iids || []).map((i) => cardView(findAnyCard(game, i))).filter(Boolean);
+  const out = { ...modal };
+  out.cards = look(modal.cards);
+  if (modal.rest) out.rest = look(modal.rest);
+  if (modal.top) out.top = (modal.top || []).filter((i) => findAnyCard(game, i));
+  if (modal.bottom) out.bottom = (modal.bottom || []).filter((i) => findAnyCard(game, i));
+  // A card in a modal may be a battlefield permanent: the player should see what
+  // it currently is (counters, keywords), not what it was printed as.
+  if (modal.kind === 'sacrifice') {
+    out.cards = (modal.cards || []).map((iid) => {
+      const perm = game.battlefield.find((p) => p.iid === iid);
+      return perm ? permView(game, perm) : null;
+    }).filter(Boolean);
+  }
+  return out;
 }
 
 function viewFor(game, { sinceEvent = 0, playerCounts = {} } = {}) {
@@ -227,7 +271,7 @@ function viewFor(game, { sinceEvent = 0, playerCounts = {} } = {}) {
     oppPoints: game.scores?.[opp]?.total || 0,
     combos: game.comboHistory,
     result: game.result,
-    modal: game.modal || null,
+    modal: game.modal ? decorateModal(game, game.modal) : null,
     threat: threatFor(game),
   };
 }

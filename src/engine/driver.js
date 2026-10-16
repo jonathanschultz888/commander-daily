@@ -9,7 +9,7 @@
  * playable with one hand.
  */
 import { characteristics, hasKeyword, isLand } from './cards.js';
-import { damage, findPermanent, pump, grantKeyword, sacrifice, permValue } from './ops.js';
+import { damage, findPermanent, pump, grantKeyword, sacrifice, permValue, isDefer } from './ops.js';
 import { makeBot, canBlock } from './bot.js';
 import { chooseTarget } from './targeting.js';
 import { cardScript } from './scripts.js';
@@ -23,6 +23,9 @@ export function runEngine(game, opts = {}) {
 
   while (guard++ < options.maxIterations) {
     if (game.status === 'over') return { status: 'over', result: game.result };
+    // A question on screen stops the world: nothing resolves while the player is
+    // deciding (answering it resumes the resolution that asked).
+    if (game.modal) return { status: 'awaiting' };
     if (options.stopWhen && options.stopWhen(game)) return { status: 'handover' };
     const stepName = game.step || 'untap';
 
@@ -162,6 +165,7 @@ function priorityWindow(game, bot, options) {
         game.resolveTop();
         st.passed = [];
         game.priority = game.activePlayer;
+        if (game.modal) return 'awaiting';   // the resolution stopped to ask something
         continue;
       }
       return 'stepDone';
@@ -231,8 +235,33 @@ export function applyPlayerAction(game, pid, action, { bot = null } = {}) {
   if (!action || typeof action !== 'object') return { error: 'missing action' };
   if (game.status === 'over') return { error: 'game is over' };
 
+  try {
+    return applyPlayerActionInner(game, pid, action, { bot });
+  } catch (e) {
+    // The action asked the human a question (a search, a scry, a sacrifice):
+    // that is a successful action, not an error — the modal is up and the rest
+    // of the resolution is queued behind it.
+    if (isDefer(e)) return { ok: true, awaitingChoice: true };
+    throw e;
+  }
+}
+
+function applyPlayerActionInner(game, pid, action, { bot = null } = {}) {
   switch (action.type) {
+    case 'choose': {
+      if (!game.pendingChoice) return { error: 'nothing to answer' };
+      const out = game.resolveChoice({ picks: action.picks || [], top: action.top || [], bottom: action.bottom || [] });
+      if (out.error) return out;
+      game.pending = null;
+      return { ok: true, more: out.more };
+    }
     case 'pass': {
+      // A pass while the game is asking who attacks or who blocks means the same
+      // thing as "none": clearing the prompt on its own just asks the same
+      // question again, and the run parks forever on a question it already
+      // answered (this is a real freeze, not a stall — nothing else can happen).
+      if (game.pending?.type === 'declareAttackers') { applyAttackers(game, []); return { ok: true }; }
+      if (game.pending?.type === 'declareBlockers') { applyBlockers(game, []); return { ok: true }; }
       // Real priority pass (CR 117.3d): record it so the driver can end the step
       // once both players have passed.
       game.pending = null;

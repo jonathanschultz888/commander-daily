@@ -54,6 +54,14 @@ the free public hosting recipe (Render + Upstash, or an Oracle Always Free VM).*
 | Report a card that misbehaved | `POST /api/report-card`, `src/engine/corrections.js` | The engine answers the report itself: printed text vs. compiled script. Mechanical gaps are corrected automatically, saved, and applied to every later game; anything else is recorded with the reason. `GET /api/reports?token=$ADMIN_TOKEN` lists them. |
 | Vote for tomorrow's deck | `daily.voteOptions`, `tallyVotes` | Three deterministic candidates plus "surprise me". A clear winner seeds tomorrow's matchup; ties and "random" fall back to the seeded pick. |
 
+| Sideways-hiding rail | `public/style.css` (round 5) | Collapsing the options no longer folds them in place: the panels retract off the right edge, board and all, and a **⟩** tab at the edge brings them back. On a phone the folded rail also stops painting over the bottom of the table. |
+| Bigger board cards | `public/style.css`, `renderBattlefield()` | Board cards are **112×148** at 1440×900 (96×134 on a short laptop, 92×128 on a phone), sized by the lane they sit in, so the bottom of the card — the rules text and the printed P/T — is never cut off by its own row. |
+| Identical tokens stack, still individually selectable | `stackKey()`, `.stack-group`, `.stack-pip` | Three Squirrel tokens are **one pile** with a ×3 badge and **one numbered chip per token**: tap a chip to attack with exactly that token, tap the face to attack with the whole pile, double-click either to inspect it. A pile keeps its own counters, damage and attachments in the key, so tokens that differ never merge. |
+| A search shows the real library | `chooseHtml()`, `askChoice()` (kind `search`) | A tutor opens a **sheet over the field** listing every card this effect can legally find — one real card face each, with the rest of the library folded behind a disclosure — and the confirm stays shut until the engine has the number of picks it asked for. |
+| "Look at the top N" keeps the order | `topXHtml()`, `resolveTop()` | The real top N in two rows — *stays on top* (left to right is the order you draw) and *goes to the bottom* — with arrows to reorder before you confirm. |
+| Command zone and graveyard on the table | `renderPiles()` | The command zone is always visible with the commander and its **recast tax** (or *empty* while it is on the battlefield), and the graveyard shows its **top card** without opening the pile. |
+| A question cannot be dismissed | `renderChoice()`, `closeModal()` | Escape and the backdrop are refused while the engine is waiting on an answer; answering hands the game straight back, and the sheet's styling never sticks to the ordinary pop-ups that follow. |
+
 ## Points, concretely
 
 `src/engine/score.js` is the only place points come from — the client can't award them.

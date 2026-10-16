@@ -23,6 +23,7 @@ import {
   runEffects, draw, damage, destroy, exile, sacrifice, putPermanent, createTokens, addMana,
   untap, tapPermanent, pump, grantKeyword, findPermanent, moveToGraveyard, shuffleLibrary,
   addCounters, loseLife, gainLife, permValue, SPECS, specMatches, legalTargets,
+  lookAtTop, resumeDeferred, isDefer, rebuildPendingChoice,
 } from './ops.js';
 
 export const STEPS = [
@@ -148,6 +149,37 @@ function unpackDeep(v) {
  * counter (so shuffles continue instead of re-rolling), and trims the log and
  * animation feed so a long game stays small enough to store cheaply.
  */
+/** A queued frame, as identities: a live source card cannot be stored. */
+function packFrame(f) {
+  if (f.resume) return { resume: null, hasClosures: true };   // a closure: not savable
+  return {
+    ctx: f.ctx ? {
+      sourceIid: f.ctx.source?.iid ?? null,
+      controller: f.ctx.controller ?? null,
+      targetIids: (f.ctx.targets || []).map((t) => (t && typeof t === 'object' && t.iid !== undefined ? t.iid : t)),
+      x: f.ctx.x ?? 0,
+      mode: f.ctx.mode ?? null,
+      spellIid: f.ctx.spell?.iid ?? null,
+    } : null,
+    steps: f.steps || [],
+    hasClosures: !!f.hasClosures,
+  };
+}
+
+/** Find a card object again by id, anywhere it could be. */
+function findByIid(game, iid) {
+  if (!iid || typeof iid !== 'string') return null;
+  const onStack = (game.stack || []).find((e) => e.iid === iid);
+  if (onStack) return onStack;
+  for (const p of game.players) {
+    for (const zone of ['library', 'hand', 'graveyard', 'exile', 'command']) {
+      const hit = (p.zones[zone] || []).find((c) => c.iid === iid);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
 export function packGame(game) {
   const asRef = (x) => (x && typeof x === 'object' && x.iid !== undefined ? x.iid : x);
   const state = {
@@ -157,7 +189,7 @@ export function packGame(game) {
     _listeners: undefined,
     _staticMods: undefined,
     bot: undefined,
-    chooseFrom: undefined,
+    chooseFrom: undefined,   // retired: choices go through pendingChoice/resolveChoice now
     scriptFor: undefined,
     runEnterAbility: undefined,
     unsupported: [...(game.unsupported || [])],
@@ -194,6 +226,16 @@ export function packGame(game) {
     })),
     // Combos are code, not state: keep only the bookkeeping.
     _comboRegistry: (game._comboRegistry || []).map((c) => ({ name: c.name, firedThisGame: !!c.firedThisGame })),
+    // A modal that is still on screen and the work that is waiting behind it are
+    // part of the run: reloading must not lose the question or the tail of the
+    // spell that asked it.
+    modal: game.modal ? { ...game.modal } : null,
+    pendingChoice: game.pendingChoice
+      ? { kind: game.pendingChoice.kind, playerId: game.pendingChoice.playerId, picks: game.pendingChoice.picks,
+          data: game.pendingChoice.data, cards: game.pendingChoice.cards }
+      : null,
+    deferred: (game.deferred || []).map(packFrame),
+    deferredHasClosures: !!game.deferredHasClosures,
   };
   return JSON.parse(JSON.stringify(state, PACK_REPLACER));
 }
@@ -226,6 +268,32 @@ export function reviveGame(state) {
     if (!hostIid) continue;
     const host = game.battlefield.find((p) => p.iid === hostIid);
     if (host) { perm.attachedTo = host; host.attachments.push(perm); }
+  }
+  // A question that was on screen when the page was reloaded comes back with its
+  // answer-applier rebuilt from the card scripts, and the work queued behind it
+  // is restored (unless it was a closure, which JSON cannot carry — see below).
+  game.deferred = (state.deferred || []).map((f) => {
+    if (!f.ctx || f.hasClosures && !f.ctx) return { ctx: null, steps: [], hasClosures: true };
+    const ctx = {
+      source: findByIid(game, f.ctx.sourceIid),
+      controller: f.ctx.controller,
+      targets: (f.ctx.targetIids || []).map((i) => findByIid(game, i) ?? i).filter((x) => x !== null && x !== undefined),
+      x: f.ctx.x,
+      mode: f.ctx.mode,
+      spell: f.ctx.spellIid ? (game.stack || []).find((e) => e.iid === f.ctx.spellIid) || null : null,
+    };
+    return { ctx, steps: f.steps || [], hasClosures: !!f.hasClosures };
+  }).filter((f) => f.ctx || f.steps.length);
+  if (state.deferredHasClosures && game.deferred.some((f) => f.hasClosures && !f.ctx)) {
+    game.deferred = game.deferred.filter((f) => f.ctx);
+  }
+  if (game.pendingChoice) {
+    game.pendingChoice = { ...game.pendingChoice, apply: rebuildPendingChoice(game, game.pendingChoice) };
+  } else if (game.modal) {
+    // The question itself survived but nothing can apply an answer: it was asked
+    // by the scripted opening, or the log was written by an older version. The
+    // game carries on rather than parking forever.
+    game.modal = null;
   }
   attachScoring(game);
   game.recomputeStatics();
@@ -288,7 +356,7 @@ export function createGame({ decks, seed, humanDeckIndex = 0, options = {} }) {
   game.startingPlayer = HUMAN;
   game.runEnterAbility = game.runEnterAbility.bind(game);
   game.scriptFor = game.scriptFor.bind(game);
-  game.chooseFrom = game.chooseFrom.bind(game);
+  game.resolveChoice = game.resolveChoice.bind(game);
   game.status = 'playing';
   game.checkStateBased();
   game.beginTurn(HUMAN, { firstTurn: true });
@@ -330,14 +398,41 @@ const gameMethods = {
     const script = cardScript(inst);
     if (script.onEnter) script.onEnter(this, { source: inst, controller: playerId, targets });
     if (script.scry) {
-      const pl = this.players[playerId];
-      const look = pl.zones.library.slice(0, script.scry);
-      look.sort((a, b) => b.cmc - a.cmc);
-      pl.zones.library = [...look, ...pl.zones.library.slice(look.length)];
+      // A scry land really does let the player look at the top cards and put
+      // them back in an order of their choosing — and that can suspend the
+      // arrival, which is the same machinery every other look-at-top uses.
+      const what = script.scry === 1 ? 'the top card of your library' : `the top ${script.scry} cards of your library`;
+      lookAtTop(this, playerId, script.scry, { source: inst, controller: playerId },
+        { title: `${inst.name} — look at ${what}` });
     }
   },
 
-  chooseFrom() { return null; },
+  /**
+   * The human answered a question (a search, a scry, a discard, a sacrifice):
+   * apply the answer, then run whatever the suspension left queued. If answering
+   * asks something else, the new question stays up and the rest stays queued.
+   */
+  resolveChoice(answer = {}) {
+    const pc = this.pendingChoice;
+    if (!pc) return { error: 'nothing to answer' };
+    const apply = pc.apply || rebuildPendingChoice(this, pc);
+    this.pendingChoice = null;
+    this.modal = null;
+    if (!apply) return { error: 'that choice can no longer be answered' };
+    let result = null;
+    try {
+      result = apply(answer);
+    } catch (e) {
+      if (!isDefer(e)) throw e;
+    }
+    let finished = !this.modal;
+    if (finished) finished = resumeDeferred(this);
+    if (!this.modal) { this.checkStateBased(); finished = finished && !this.modal; }
+    return { ok: true, result, more: !finished };
+  },
+
+  /** True while the game is waiting for the human to answer something. */
+  awaitingChoice() { return !!this.modal; },
   triggerEvent(event) {
     const triggers = [];
     for (const perm of [...this.battlefield]) {
@@ -527,8 +622,16 @@ const gameMethods = {
   resolveTop() {
     const entry = this.stack.pop();
     if (!entry) return;
-    if (entry.kind === 'spell') this.resolveSpell(entry);
-    else this.resolveAbility(entry);
+    try {
+      if (entry.kind === 'spell') this.resolveSpell(entry);
+      else this.resolveAbility(entry);
+    } catch (e) {
+      // The resolution stopped to ask the human something: the entry has already
+      // left the stack (it is resolving, not waiting) and what is left of it is
+      // queued. State-based actions run when the answer arrives.
+      if (!isDefer(e)) throw e;
+      return;
+    }
     this.checkStateBased();
   },
 

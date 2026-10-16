@@ -14,8 +14,9 @@ import { loadAllDecks, profileDeck, COMBO_REGISTRY, GAME_CHANGERS } from '../src
 import * as store from '../src/server/store.js';
 import { SEED_DECKS } from '../src/decks/lists.js';
 import { createGame, reviveGame, packGame } from '../src/engine/game.js';
-import { bounce, destroy, gainLife, animate, pump } from '../src/engine/ops.js';
+import { bounce, destroy, gainLife, animate, pump, searchLibrary, lookAtTop, isDefer } from '../src/engine/ops.js';
 import { runEngine, combatDamage, executeAction, playOpening, applyPlayerAction, applyAttackers } from '../src/engine/driver.js';
+import * as driver from '../src/engine/driver.js';
 import { makeBot } from '../src/engine/bot.js';
 import { makeCardInstance, characteristics, makeTokenInstance, hasKeyword, countersOn, activeAnimations } from '../src/engine/cards.js';
 import { cardScript } from '../src/engine/scripts.js';
@@ -1203,4 +1204,140 @@ test('every card in the pool that animates a land can actually do it', () => {
     if (!hasAbility) missing.push(card.name);
   }
   assert.deepEqual(missing, [], `these cards say they animate something but the engine cannot do it:\n  ${missing.join('\n  ')}`);
+});
+
+
+/* ------------------------------------------------------------------ */
+/* Round 5: the human is asked, and a question survives a reload       */
+/* ------------------------------------------------------------------ */
+
+/** A game where the human seat answers its own questions. */
+const interactiveGame = () => {
+  const g = createGame({ decks: [deckById('omnath-landfall'), deckById('sea-monsters')], seed: 90210,
+    options: { noScoring: true, humanIsBot: false } });
+  g.interactive = true;
+  g.bot = makeBot('midrange');
+  return g;
+};
+
+test('a search offers every legal card in the library, not a card picked for you', () => {
+  const g = interactiveGame();
+  const legal = g.players[0].zones.library.filter((c) => c.types.includes('Land'));
+  const libBefore = g.players[0].zones.library.length;
+  assert.ok(legal.length > 20, 'the fixture deck should be full of lands');
+  let deferred = null;
+  try {
+    searchLibrary(g, 0, (c) => c.types.includes('Land'), { destination: 'hand', count: 1 }, {});
+  } catch (e) {
+    if (!isDefer(e)) throw e;
+    deferred = e;
+  }
+  assert.ok(deferred, 'the human seat is asked instead of the engine deciding');
+  assert.equal(g.modal.kind, 'search');
+  assert.equal(g.modal.cards.length, legal.length, 'every legal card in the deck is in the sheet');
+  assert.ok(g.modal.rest.length > 0, 'and the cards that are not legal picks are offered as "the rest"');
+  assert.equal(typeof g.modal.cards[0], 'string', 'the sheet names the cards by id (the server turns those into faces)');
+  assert.equal(g.players[0].zones.library.length, libBefore, 'nothing has moved yet');
+
+  const pick = g.modal.cards[3];
+  const out = g.resolveChoice({ picks: [pick] });
+  assert.ok(out.ok, 'the answer is accepted');
+  assert.equal(g.modal, null, 'the sheet closes');
+  assert.ok(g.players[0].zones.hand.some((c) => c.iid === pick), 'and the chosen card is in hand');
+  assert.equal(g.players[0].zones.library.length, libBefore - 1);
+});
+
+test('a bot seat answers its own questions without ever stopping the game', () => {
+  const g = soloGame('omnath-landfall', 'sea-monsters');   // humanIsBot: true
+  const before = g.players[0].zones.library.length;
+  const found = searchLibrary(g, 0, (c) => c.types.includes('Land'), { destination: 'battlefield', tapped: true }, {});
+  assert.equal(found.length, 1, 'the bot takes a card on the spot');
+  assert.equal(g.modal, undefined, 'and no question is ever raised');
+  assert.ok(g.players[0].zones.library.length < before, 'the library is smaller');
+});
+
+test('"look at the top three" shows the real top three and puts them back in the order chosen', () => {
+  const g = interactiveGame();
+  const top3 = g.players[0].zones.library.slice(0, 3).map((c) => c.iid);
+  let deferred = false;
+  try { lookAtTop(g, 0, 3, {}); } catch (e) { if (isDefer(e)) deferred = true; else throw e; }
+  assert.ok(deferred, 'the player looks at their own cards, so the player chooses');
+  assert.equal(g.modal.kind, 'topX');
+  assert.deepEqual(g.modal.cards, top3, 'exactly the top three, in library order');
+  assert.deepEqual(g.modal.top, top3, 'and they start on top in that order');
+  // keep the third one, bottom the first, the second stays under it
+  g.resolveChoice({ top: [top3[2], top3[1]], bottom: [top3[0]] });
+  const lib = g.players[0].zones.library.map((c) => c.iid);
+  assert.deepEqual(lib.slice(0, 2), [top3[2], top3[1]], 'the kept cards are on top in the chosen order');
+  assert.equal(lib[lib.length - 1], top3[0], 'and the bottomed card is at the bottom of the library');
+});
+
+test('a question is still there after a reload, and can be answered then', () => {
+  const g = interactiveGame();
+  try { searchLibrary(g, 0, (c) => c.types.includes('Land'), { destination: 'battlefield', tapped: true }, {}); }
+  catch (e) { if (!isDefer(e)) throw e; }
+  const pick = g.modal.cards[2];
+
+  // the run is saved and restored the way the server does it between requests
+  const revived = reviveGame(packGame(g));
+  assert.equal(revived.modal?.kind, 'search', 'the sheet comes back with the run');
+  assert.equal(revived.modal?.playerId, 0);
+  assert.equal(revived.pendingChoice?.kind, 'search', 'and so does the choice it is waiting for');
+  assert.equal(typeof revived.pendingChoice?.apply, 'function', 'with the answer-applier rebuilt from the card scripts');
+
+  const out = revived.resolveChoice({ picks: [pick] });
+  assert.ok(out.ok, 'the question can be answered after the reload');
+  assert.equal(revived.modal, null, 'and it is cleared');
+  assert.ok(revived.battlefield.some((c) => c.iid === pick), 'the chosen land entered the battlefield');
+});
+
+test('a search that also does something else finishes that something else afterwards', () => {
+  const g = interactiveGame();
+  // Read the Bones: scry 2, then lose 2 and draw 2 — the scry asks, the rest waits.
+  const card = makeCardInstance(oracle['read the bones'], { owner: 0, controller: 0, zone: 'hand', iid: g.nextIid() });
+  const handBefore = g.players[0].zones.hand.length;
+  const life = g.players[0].life;
+  g.pushSpell(card, 0, { targets: [] });
+  assert.equal(g.stack.length, 1, 'the spell is on the stack');
+  // resolve it the way the driver does (resolveTop swallows the suspension and
+  // parks the game on the question instead)
+  g.resolveTop();
+  assert.equal(g.modal?.kind, 'topX', 'the scry stops the resolution to ask');
+  const out = g.resolveChoice({ top: g.modal.cards, bottom: [] });
+  assert.ok(out.ok);
+  assert.equal(g.players[0].life, life - 2, 'the rest of the spell ran: 2 life paid');
+  assert.equal(g.players[0].zones.hand.length, handBefore + 2, 'and two cards were drawn');
+  assert.equal(g.modal, null, 'with nothing left to answer');
+});
+
+test('passing on an attack or block prompt means "none", and never strands the run', () => {
+  // A freeze found by hammering the API with nothing but `pass`: the human held
+  // the attack step, `pass` cleared the prompt without declaring, and the driver
+  // asked the very same question again for ever.
+  const g = createGame({ decks: [deckById('squirrel-swarm'), deckById('sea-monsters')], seed: 7,
+    options: { noScoring: true, humanIsBot: false } });
+  g.interactive = true;
+  g.bot = makeBot('midrange');
+  g.beginTurn(0, { firstTurn: true });
+  const bear = putOnBattlefield(g, 'Elvish Visionary', 0);
+  bear.summoningSick = false;
+  g.step = 'declareAttackers';
+  g.attackersDeclared = false;
+  g.priorityState = { passed: [] };
+  const out = runEngine(g, { stopForHuman: true, maxIterations: 40 });
+  assert.equal(out.status, 'awaiting', 'the run stops for the human');
+  assert.equal(g.pending?.type, 'declareAttackers', 'because the human is asked who attacks');
+  applyPlayerAction(g, 0, { type: 'pass' });
+  assert.equal(g.pending, null, 'the prompt is answered, not just cleared');
+  assert.equal(g.attackersDeclared, true, 'and the declaration is recorded as "no attackers"');
+  assert.deepEqual(g.attackers, [], 'no creature was committed');
+  assert.equal(bear.tapped, false, 'and nothing was tapped by being passed on');
+});
+
+test('a pass with a real priority prompt is still an ordinary priority pass (CR 117.3d)', () => {
+  const g = soloGame();
+  g.pending = { type: 'priority', player: 0, actions: [] };
+  applyPlayerAction(g, 0, { type: 'pass' });
+  assert.equal(g.pending, null);
+  assert.ok((g.priorityState?.passed || []).includes(0), 'the pass is on the record so the step can end');
 });

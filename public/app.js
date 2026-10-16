@@ -10,6 +10,8 @@ const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls)
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 const S = {
+  // the engine waiting on an answer: the sheet's own selection, reset per question
+  choice: null, choiceSig: null, choiceOpen: false,
   sacrificePick: null,
   boot: null, mode: 'daily', view: null, pending: null,
   selected: null, targeting: null, attackers: new Set(), blocks: [], blockPick: null,
@@ -333,6 +335,7 @@ function renderGame() {
   renderPromptBar();
   playNewEvents();
   maybeShowThreat();
+  renderChoice();
   if (v.status === 'over') showGameOver();
 }
 
@@ -537,7 +540,9 @@ function renderHand(me) {
     const mid = (n - 1) / 2;
     const off = i - mid;
     node.style.setProperty('--fan-rot', `${(off * Math.min(3.2, 16 / Math.max(n, 1))).toFixed(2)}deg`);
-    node.style.setProperty('--fan-y', `${(Math.abs(off) ** 1.3 * Math.min(4, 26 / Math.max(n, 1))).toFixed(1)}px`);
+    // the arc rises at the edges: a fan that dipped pushed its outer cards out of
+    // the row (and a sideways-scrolling row clips vertically too), shaving them
+    node.style.setProperty('--fan-y', `${(-(Math.abs(off) ** 1.3) * Math.min(3, 22 / Math.max(n, 1))).toFixed(1)}px`);
     node.style.setProperty('--fan-i', String(i));
     node.style.zIndex = String(10 + i);
     const act = playable.get(c.iid);
@@ -579,24 +584,25 @@ function renderBattlefield(p, which) {
   }
   const perms = S.view.battlefield.filter((x) => x.controller === p.id);
   const bucket = (c) => (c.isLand ? 'lands' : (c.types || []).includes('Creature') ? 'creatures' : 'other');
-  const place = (c) => {
-    const zone = zones[bucket(c)];
-    zone.classList.remove('empty');
-    const n = cardEl(c, { controller: p.id, legalTarget: S.targeting?.targets?.has(c.iid) });
-    if (S.attackers.has(c.iid)) n.classList.add('attacker-mark');
-    if (S.blocks.some((b) => b.blocker === c.iid)) n.classList.add('blocker-mark');
-    if (S.blockPick?.iid === c.iid) n.classList.add('selected', 'block-pick');
+
+  /** Everything a permanent responds to, so a stack's per-token chip can do it too. */
+  const wire = (c, n) => {
     if (S.pending?.type === 'declareAttackers' && p.id === S.view.humanId && (S.pending.legal || []).includes(c.iid)) {
       n.style.cursor = 'pointer';
       n.addEventListener('click', () => {
         if (S.attackers.has(c.iid)) S.attackers.delete(c.iid); else S.attackers.add(c.iid);
         renderGame();
       });
-    } else if (S.pending?.type === 'declareBlockers' && p.id === S.view.humanId) {
+    } else if (S.pending?.type === 'declareBlockers') {
       // Both halves of the block are clickable: tap the attacker to pick it, or tap
       // your own creature first — whichever order the player thinks in. (Before this
       // only your creatures responded to a tap, so an attacker could never be the
       // second half of the pair, which is why blocking could not be completed.)
+      //
+      // This branch deliberately runs for BOTH sides of the table. An earlier guard
+      // here read `p.id === S.view.humanId`, which meant the attacker — a permanent
+      // on the opponent's board — never got the class or the handler at all, so the
+      // attacker half of every pair was dead on the table.
       const isAttacker = (S.pending.attackers || []).includes(c.iid);
       const isMyCreature = p.id === S.view.humanId && (S.pending.blockers || []).includes(c.iid);
       if (isAttacker || isMyCreature) {
@@ -622,23 +628,105 @@ function renderBattlefield(p, which) {
       n.classList.add('legal-sacrifice', 'legal-target');
       n.addEventListener('click', () => onSacrificePick(c.iid));
     }
+  };
+
+  const place = (c) => {
+    const n = cardEl(c, { controller: p.id, legalTarget: S.targeting?.targets?.has(c.iid) });
+    if (S.attackers.has(c.iid)) n.classList.add('attacker-mark');
+    if (S.blocks.some((b) => b.blocker === c.iid)) n.classList.add('blocker-mark');
+    if (S.blockPick?.iid === c.iid) n.classList.add('selected', 'block-pick');
+    wire(c, n);
     n.title = c.oracle_text || '';
     n.addEventListener('dblclick', () => inspect(c));
-    zone.querySelector('.zone-cards').appendChild(n);
+    return n;
+  };
+
+  /**
+   * Identical tokens are one pile: three Plant tokens are a stack of three, not
+   * three pictures of the same card laid on top of each other, so the pile is one
+   * card face with a ×3 badge and a numbered chip per token underneath. The chips
+   * are the individual tokens — targeting, attacking, blocking and sacrificing all
+   * work per token through them, and the pile face is "the whole pile".
+   */
+  const stackKey = (c) => {
+    if (!c.isToken) return null;
+    const state = JSON.stringify([c.counterList || [], c.damage || 0, (c.attachments || []).length,
+      (c.keywords || []).join('|'), c.tapped ? 1 : 0, c.tempBonus || 0, (c.animatedLabels || [])]);
+    return `${c.name}|${c.controller}|${c.power}/${c.toughness}|${state}`;
+  };
+  const groups = new Map();
+  const ordered = [];
+  for (const c of perms) {
+    const key = stackKey(c);
+    if (!key) { ordered.push({ cards: [c] }); continue; }
+    if (!groups.has(key)) { const g = { cards: [] }; groups.set(key, g); ordered.push(g); }
+    groups.get(key).cards.push(c);
+  }
+  const placeGroup = (group) => {
+    const zone = zones[bucket(group.cards[0])];
+    zone.classList.remove('empty');
+    const into = zone.querySelector('.zone-cards');
+    if (group.cards.length === 1) { into.appendChild(place(group.cards[0])); return; }
+    const wrap = el('div', 'stack-group');
+    wrap.title = `${group.cards.length} × ${group.cards[0].name}`;
+    const face = place(group.cards[0]);
+    face.classList.add('stack-face');
+    wrap.appendChild(face);
+    wrap.insertAdjacentHTML('afterbegin', `<span class="stack-count">×${group.cards.length}</span>`);
+    const pips = el('div', 'stack-pips');
+    group.cards.forEach((c, i) => {
+      const pip = el('button', 'stack-pip', String(i + 1));
+      pip.dataset.token = c.iid;
+      pip.title = `${c.name} ${i + 1} of ${group.cards.length} — pick this one`;
+      if (S.attackers.has(c.iid)) pip.classList.add('on', 'attacking');
+      if (S.blocks.some((b) => b.blocker === c.iid)) pip.classList.add('on');
+      if (S.targeting?.targets?.has(c.iid)) pip.classList.add('legal');
+      if (S.sacrificePick?.legal.has(c.iid)) pip.classList.add('legal');
+      wire(c, pip);
+      pip.addEventListener('dblclick', (e) => { e.stopPropagation(); inspect(c); });
+      pips.appendChild(pip);
+    });
+    wrap.appendChild(pips);
+    // the pile face is the whole pile: attacking with it attacks with all of it
+    if (S.pending?.type === 'declareAttackers' && p.id === S.view.humanId) {
+      const legal = (S.pending.legal || []);
+      face.style.cursor = 'pointer';
+      face.addEventListener('click', (e) => {
+        e.stopImmediatePropagation();
+        const mine = group.cards.filter((c) => legal.includes(c.iid));
+        const on = mine.every((c) => S.attackers.has(c.iid));
+        for (const c of mine) { if (on) S.attackers.delete(c.iid); else S.attackers.add(c.iid); }
+        renderGame();
+      }, true);
+    }
+    wrap.addEventListener('dblclick', (e) => { e.stopPropagation(); inspect(group.cards[0]); });
+    into.appendChild(wrap);
   };
   // creatures first (front), then the rest, then lands — order within a zone stays stable
-  for (const c of perms) place(c);
+  for (const g of ordered) placeGroup(g);
 }
 
 function renderPiles(p, which) {
   const wrap = which === 'opp' ? $('#oppPiles') : $('#myPiles');
+  // The graveyard shows its top card: "somewhat visible" means the player can see
+  // what is in there without opening anything, and click through for the rest.
+  const grave = p.graveyard || [];
+  const top = grave[grave.length - 1];
+  const cmd = p.command || [];
+  // The command zone is always on screen: an empty one is information too (the
+  // commander is on the battlefield), and when the commander is anywhere else the
+  // zone says where it is and what it costs to cast again.
+  const cmdText = cmd.length
+    ? `👑 ${esc(cmd[0].name)}${cmd[0].castFromCommandZone ? ` · tax +${cmd[0].castFromCommandZone}` : ''}`
+    : '👑 command zone empty';
+  const cmdWhere = cmd.length ? '' : (p.commander ? ` — ${esc(p.commander)} is on the battlefield` : '');
   wrap.innerHTML = `
+    <span class="pile cmd ${cmd.length ? 'live' : 'spent'}" data-pile="${cmd.length ? 'command' : ''}" title="${cmd.length ? 'In the command zone — click to look' : 'Your commander is on the battlefield'}">${cmdText}${cmdWhere}</span>
+    <span class="pile grave ${top ? 'live' : ''}" data-pile="graveyard" title="${top ? `Top of the graveyard: ${esc(top.name)} — click for the whole pile` : 'Empty graveyard'}">⚰ ${grave.length}${top ? ` · ${esc(top.name)}` : ''}</span>
     <span class="pile" data-pile="library">📚 ${p.library}</span>
-    <span class="pile" data-pile="graveyard">⚰ ${p.graveyard.length}</span>
     <span class="pile" data-pile="exile">✦ ${p.exile.length}</span>
-    ${p.command.length ? `<span class="pile" data-pile="command">👑 ${p.command.length}</span>` : ''}
     ${Object.entries(p.commanderDamage || {}).length ? `<span class="pile">☠ ${Object.entries(p.commanderDamage).map(([k, v]) => `${k.split(',')[0]} ${v}`).join(' · ')}</span>` : ''}`;
-  $$('.pile', wrap).forEach((n) => n.onclick = () => showPile(p, n.dataset.pile, which));
+  $$('.pile', wrap).forEach((n) => { if (n.dataset.pile) n.onclick = () => showPile(p, n.dataset.pile, which); });
 }
 
 function showPile(p, pile, which) {
@@ -1183,15 +1271,21 @@ function wireRail() {
       t.setAttribute('aria-expanded', String(!hidden));
     }
   };
+  const flip = () => {
+    const hidden = !document.body.classList.contains('rail-hidden');
+    apply(hidden);
+    saveRail({ hidden });
+  };
   const toggle = $('#railToggle');
-  if (toggle) {
-    toggle.onclick = () => {
-      const hidden = !document.body.classList.contains('rail-hidden');
-      apply(hidden);
-      saveRail({ hidden });
-    };
-  }
-  apply(!!saved.hidden);
+  if (toggle) toggle.onclick = flip;
+  // the edge tab, for when the rail has slid out of reach
+  const peek = $('#railPeek');
+  if (peek) peek.onclick = flip;
+  // On a phone the rail is a column of panels stacked under the table: open, it
+  // takes the whole screen and squeezes the player's own rows down to a sliver.
+  // Folded is the only sane default there, and the edge tab is one tap away.
+  const isPhone = () => window.innerWidth <= 720;
+  apply(saved.hidden === undefined ? isPhone() : !!saved.hidden);
 }
 
 /* ==========================================================================
@@ -1279,6 +1373,14 @@ function playNewEvents() {
   S.lastCursor = v.eventCursor;
   for (const e of (v.events || [])) {
     switch (e.type) {
+      case 'revealed': {
+        // "Look at the top card" effects really do look at a card: name it.
+        const mine = e.player === (v.humanId ?? 0) || e.controller === (v.humanId ?? 0);
+        const card = (v.battlefield.find((p) => p.iid === e.card) || {});
+        const known = card.name || (v.players.flatMap((pl) => [...(pl.graveyard || []), ...(pl.exile || [])]).find((c) => c.iid === e.card) || {}).name || 'a card';
+        toast(`${mine ? 'You reveal' : 'They reveal'} ${known} from the top${e.destination === 'battlefield' ? ' — onto the battlefield' : ''}`, 2600);
+        break;
+      }
       case 'landPlayed': {
         // One line, one toast: "You play Forest". This is the whole log entry for a
         // land drop — no matching "enters the battlefield" message.
@@ -1379,14 +1481,209 @@ function askConfirm({ title, body, ok = 'Confirm', cancel = 'Cancel' }) {
   });
 }
 
+/* ==========================================================================
+   THE ENGINE IS WAITING FOR AN ANSWER
+   --------------------------------------------------------------------------
+   A search, a scry ("look at the top three"), a discard and a forced sacrifice
+   all arrive as `view.modal`: the cards to choose from, already filtered to the
+   legal ones, plus how many the effect wants. The sheet is drawn over the field,
+   the choice is made on the real card faces, and nothing is committed until the
+   player presses the button.
+   ========================================================================== */
+function resetChoiceState(m) {
+  const cards = (m.cards || []).map((c) => c.iid);
+  S.choice = {
+    kind: m.kind,
+    picks: [],
+    top: (m.top && m.top.length ? m.top : cards).filter((i) => cards.includes(i)),
+    bottom: (m.bottom || []).filter((i) => cards.includes(i)),
+    showRest: false,
+  };
+}
+
+function renderChoice() {
+  const m = S.view?.modal;
+  if (!m) {
+    if (S.choiceOpen) { S.choiceOpen = false; S.choice = null; closeModal(); }
+    return;
+  }
+  // A different question (or a re-render after a reload) starts from its own
+  // defaults: the select list is engine state, the selection is local.
+  const sig = `${m.kind}:${m.title}:${(m.cards || []).map((c) => c.iid).join(',')}`;
+  if (S.choiceSig !== sig) { S.choiceSig = sig; resetChoiceState(m); }
+  S.choiceOpen = true;
+  const body = $('#modalBody');
+  body.innerHTML = m.kind === 'topX' ? topXHtml(m) : chooseHtml(m);
+  wireChoice(m);
+  $('#modalBackdrop').hidden = false;
+  document.body.classList.add('no-scroll');
+  $('#modal').classList.add('choice-sheet');
+}
+
+function chooseHtml(m) {
+  const sel = S.choice.picks;
+  const need = m.pickCount || 1;
+  const faces = (list, legal = true) => list.map((c) => `
+    <div class="choose-card ${legal ? '' : 'not-legal'} ${sel.includes(c.iid) ? 'picked' : ''}" data-iid="${c.iid}">
+      ${cardEl(c).outerHTML}
+      ${legal ? '' : '<span class="choose-tag">not a legal pick</span>'}
+      ${sel.includes(c.iid) ? '<span class="choose-tick">✓</span>' : ''}
+    </div>`).join('');
+  const rest = m.rest || [];
+  return `
+    <div class="choose-block">
+      <div class="choose-head">
+        <h1>${esc(m.title || 'Choose a card')}</h1>
+        <p class="muted small">${esc(m.note || '')}</p>
+        <p class="choose-ask">${need > 1
+          ? `Choose ${need} cards — ${sel.length} of ${need} picked`
+          : (sel.length ? 'One card picked' : 'Pick a card')}</p>
+      </div>
+      <div class="choose-grid">${faces(m.cards || [])}</div>
+      ${rest.length ? `
+        <details class="choose-rest" ${S.choice.showRest ? 'open' : ''}>
+          <summary>${rest.length} other card${rest.length === 1 ? '' : 's'} in your library are not legal picks — show them</summary>
+          <div class="choose-grid dim">${faces(rest, false)}</div>
+        </details>` : ''}
+      <div class="choose-foot">
+        <span class="muted small">${esc(m.destination ? `Goes to: ${m.destination}` : '')}</span>
+        <button class="ghost tiny" id="chooseCancel">Clear</button>
+        <button class="primary" id="chooseConfirm" ${sel.length === need ? '' : 'disabled'}>
+          ${sel.length === need ? 'Confirm' : `Pick ${need - sel.length} more`}
+        </button>
+      </div>
+    </div>`;
+}
+
+function topXHtml(m) {
+  const byId = new Map((m.cards || []).map((c) => [c.iid, c]));
+  const row = (ids, which) => ids.map((iid, i) => {
+    const c = byId.get(iid);
+    if (!c) return '';
+    const n = which === 'top'
+      ? `<span class="move">
+           <button class="mini-move" data-move="${which}" data-iid="${iid}" data-dir="-1" title="One card earlier" ${i === 0 ? 'disabled' : ''}>◀</button>
+           <button class="mini-move" data-move="${which}" data-iid="${iid}" data-dir="1" title="One card later" ${i === ids.length - 1 ? 'disabled' : ''}>▶</button>
+         </span>`
+      : '';
+    return `<div class="choose-card ${S.choice.picks.includes(iid) ? 'picked' : ''}" data-flip="${iid}" title="Click to move this card to the other row">
+        ${cardEl(c).outerHTML}${n}
+      </div>`;
+  }).join('');
+  return `
+    <div class="choose-block">
+      <div class="choose-head">
+        <h1>${esc(m.title || 'Look at the top of your library')}</h1>
+        <p class="muted small">${esc(m.note || '')}</p>
+      </div>
+      <div class="choose-rows">
+        <div class="choose-row">
+          <div class="choose-row-label">${esc(m.topLabel || 'Stays on top')} · ${S.choice.top.length} card${S.choice.top.length === 1 ? '' : 's'}</div>
+          <div class="choose-grid wide">${row(S.choice.top, 'top') || '<p class="muted small">Nothing on top — the library keeps the cards you draw.</p>'}</div>
+        </div>
+        <div class="choose-row bottom">
+          <div class="choose-row-label">${esc(m.bottomLabel || 'Goes to the bottom')} · ${S.choice.bottom.length}</div>
+          <div class="choose-grid dim">${row(S.choice.bottom, 'bottom') || '<p class="muted small">Click a card above to send it down here.</p>'}</div>
+        </div>
+      </div>
+      <div class="choose-foot">
+        <button class="ghost tiny" id="chooseKeepAll">Keep them all in this order</button>
+        <button class="primary" id="chooseConfirm">Confirm — draw ${esc(S.choice.top[0] ? byId.get(S.choice.top[0])?.name || 'this' : 'nothing')} first</button>
+      </div>
+    </div>`;
+}
+
+function wireChoice(m) {
+  const sel = S.choice;
+  for (const n of $$('#modalBody .choose-rest')) {
+    n.addEventListener('toggle', () => { sel.showRest = n.open; });
+  }
+  for (const n of $$('#modalBody [data-iid]')) {
+    n.addEventListener('click', () => {
+      if (n.classList.contains('not-legal')) { toast('That card is not a legal pick for this effect.'); return; }
+      const iid = n.dataset.iid;
+      const need = m.pickCount || 1;
+      const at = sel.picks.indexOf(iid);
+      if (at >= 0) sel.picks.splice(at, 1);
+      else if (need === 1) sel.picks = [iid];
+      else if (sel.picks.length < need) sel.picks.push(iid);
+      else { sel.picks.shift(); sel.picks.push(iid); }
+      renderChoice();
+    });
+    n.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      const card = (m.cards || []).concat(m.rest || []).find((c) => c.iid === n.dataset.iid);
+      if (card) inspect(card);
+    });
+  }
+  for (const n of $$('#modalBody [data-flip]')) {
+    n.addEventListener('click', (e) => {
+      if (e.target.closest('.mini-move')) return;
+      const iid = n.dataset.flip;
+      const inTop = sel.top.indexOf(iid);
+      if (inTop >= 0) { sel.top.splice(inTop, 1); sel.bottom.push(iid); }
+      else { const at = sel.bottom.indexOf(iid); if (at >= 0) sel.bottom.splice(at, 1); sel.top.push(iid); }
+      renderChoice();
+    });
+    n.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      const card = (m.cards || []).find((c) => c.iid === n.dataset.flip);
+      if (card) inspect(card);
+    });
+  }
+  for (const n of $$('#modalBody .mini-move')) {
+    n.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const { iid, dir } = n.dataset;
+      const from = sel.top.indexOf(iid);
+      const to = from + Number(dir);
+      if (from < 0 || to < 0 || to >= sel.top.length) return;
+      [sel.top[from], sel.top[to]] = [sel.top[to], sel.top[from]];
+      renderChoice();
+    });
+  }
+  const keepAll = $('#chooseKeepAll');
+  if (keepAll) keepAll.onclick = () => {
+    const ids = (m.cards || []).map((c) => c.iid);
+    sel.top = [...sel.top, ...sel.bottom.filter((i) => !sel.top.includes(i))];
+    sel.bottom = [];
+    for (const i of ids) if (!sel.top.includes(i)) sel.top.push(i);
+    renderChoice();
+  };
+  const clear = $('#chooseCancel');
+  if (clear) clear.onclick = () => { sel.picks = []; renderChoice(); };
+  const ok = $('#chooseConfirm');
+  if (ok) ok.onclick = () => submitChoice(m);
+}
+
+async function submitChoice(m) {
+  const sel = S.choice;
+  if (!sel) return;
+  if (m.kind === 'topX') {
+    await sendAction({ type: 'choose', picks: sel.top, top: sel.top, bottom: sel.bottom });
+    return;
+  }
+  const need = m.pickCount || 1;
+  if (sel.picks.length !== need) { toast(`Pick ${need - sel.picks.length} more.`); return; }
+  await sendAction({ type: 'choose', picks: sel.picks });
+}
+
 function openModal(html) {
+  // An ordinary pop-up is not the search sheet: the sheet's styling (top-aligned
+  // backdrop, no close button, its own scroll box) must not stick to what follows.
+  $('#modal').classList.remove('choice-sheet');
   $('#modalBody').innerHTML = html;
   $('#modalBackdrop').hidden = false;
   document.body.classList.add('no-scroll');
 }
 function closeModal() {
+  // A question from the engine cannot be dismissed: the game is parked on it and
+  // closing the sheet would leave the run with no way forward.
+  if (S.view?.modal) return;
   $('#modalBackdrop').hidden = true;
   $('#modalBody').innerHTML = '';
+  $('#modal').classList.remove('choice-sheet');
+  S.choice = null;
   document.body.classList.remove('no-scroll');
 }
 

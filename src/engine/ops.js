@@ -467,6 +467,116 @@ export function addMana(g, playerId, color, n, ctx = {}) {
   g.emit({ type: 'manaAdded', player: playerId, color, amount: n, ctx });
 }
 
+/* ------------------------------------------------------------------ */
+/* Choices: the one place where a seat is asked to pick something      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Thrown when the human seat has to answer before the game can go on.
+ *
+ * A resolution cannot block — there is no thread to wait on — so the effect
+ * stops exactly where the question is asked, whatever is left of it is queued
+ * (see pushDeferred) and the game parks on `game.modal` until the client
+ * answers through game.resolveChoice(). Only the human seat does this: a bot
+ * answers on the spot, which is why the simulation harness and the tests, where
+ * `interactive` is never set, behave exactly as before.
+ */
+export class DeferResolution {
+  constructor(kind) { this.name = 'DeferResolution'; this.kind = kind; this.deferResolution = true; }
+}
+
+export const isDefer = (e) => !!(e && e.deferResolution);
+
+/** Queue the rest of a partially resolved effect. Innermost frame first. */
+export function pushDeferred(g, frame) {
+  if (!frame) return;
+  if (!g.deferred) g.deferred = [];
+  if (frame.hasClosures) g.deferredHasClosures = true;
+  g.deferred.push(frame);
+}
+
+/** The answer a bot gives when a script does not care to think about it. */
+function defaultPick(g, cards, kind, n) {
+  const list = [...cards];
+  if (kind === 'sacrifice') list.sort((a, b) => permValue(g, a) - permValue(g, b));
+  else list.sort((a, b) => scoreCardForKeep(b, g) - scoreCardForKeep(a, g));
+  return list.slice(0, Math.max(1, n));
+}
+
+/** The card ids of an answer, however the client or a script phrased it. */
+export function answerIds(answer) {
+  if (!answer) return [];
+  const raw = Array.isArray(answer) ? answer : (answer.picks || answer.iids || answer.cards || []);
+  return raw.map((x) => (x && typeof x === 'object' ? x.iid : x)).filter((x) => typeof x === 'string');
+}
+
+/**
+ * Ask one seat to choose from `cards`, and return whatever `apply` returns: for
+ * a bot that is the finished work, for the human it is the answer still to come.
+ */
+export function askChoice(g, playerId, spec) {
+  const { cards = [], kind = 'choose', picks = 1, apply, bot, modal = {}, data = {} } = spec;
+  if (!cards.length) return null;
+  const humanSeat = playerId === g.humanId && g.interactive === true && !g.humanIsBot;
+  if (!humanSeat) {
+    const chosen = bot ? bot(cards) : defaultPick(g, cards, kind, picks);
+    return apply(chosen);
+  }
+  g.pendingChoice = { kind, playerId, picks, data, cards: cards.map((c) => c.iid) };
+  g.modal = { kind, playerId, picks, ...modal, cards: cards.map((c) => c.iid) };
+  throw new DeferResolution(kind);
+}
+
+/**
+ * Run what was left over when a resolution was suspended, innermost frame first.
+ * Returns false if answering asked another question; the remaining work stays
+ * queued in that case.
+ */
+export function resumeDeferred(g) {
+  const frames = g.deferred || [];
+  g.deferred = [];
+  for (let k = 0; k < frames.length; k++) {
+    const f = frames[k];
+    if (f.hasClosures && !f.resume && !f.ctx) continue;   // revived and not resumable
+    try {
+      if (f.resume) f.resume(g);
+      else runEffects(g, f.ctx, f.steps);
+    } catch (e) {
+      if (!isDefer(e)) throw e;
+      g.deferred = [...(g.deferred || []), ...frames.slice(k + 1)];
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * A pending choice survives a reload as data (kind + spec), not as a closure:
+ * this rebuilds the work that applies the answer.
+ */
+export function rebuildPendingChoice(g, pc) {
+  if (!pc) return null;
+  const data = pc.data || {};
+  switch (pc.kind) {
+    case 'search': return (answer) => applySearch(g, data, answerIds(answer));
+    case 'topX': return (answer) => applyTopX(g, data, answer);
+    case 'discard': return (answer) => discardCards(g, data.playerId, answerIds(answer), {});
+    case 'sacrifice': return (answer) => {
+      const out = [];
+      for (const iid of answerIds(answer)) {
+        const p = findPermanent(g, iid);
+        if (p) { sacrifice(g, p, {}); out.push(p); }
+      }
+      return out;
+    };
+    default: return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Effect primitives                                                   */
+/* ------------------------------------------------------------------ */
+
 export function untap(g, perm) {
   if (!perm) return;
   perm.tapped = false;
@@ -490,24 +600,113 @@ export function grantKeyword(g, perm, keywords, ctx = {}, duration = 'eot') {
   g.emit({ type: 'keywordGranted', target: perm.iid, keywords });
 }
 
-export function searchLibrary(g, playerId, spec, { destination = 'hand', tapped = false, shuffle = true, count = 1 } = {}, ctx = {}) {
+/**
+ * Search a library. The *whole* library is filtered by `spec` and every card
+ * that passes is what the chooser is allowed to pick from, so the human sees the
+ * real contents of their deck rather than a single auto-taken card; the bot
+ * keeps a heuristic. Nothing leaves the library before the choice is made.
+ */
+export function searchLibrary(g, playerId, spec, { destination = 'hand', tapped = false, shuffle = true, count = 1, title = null } = {}, ctx = {}) {
   const pl = g.players[playerId];
-  const found = [];
-  for (let i = 0; i < count; i++) {
-    const idx = pl.zones.library.findIndex((c) => spec(c));
-    if (idx < 0) break;
-    const [card] = pl.zones.library.splice(idx, 1);
-    found.push(card);
-    if (destination === 'battlefield') {
-      putPermanent(g, card, playerId, { tapped });
+  if (!pl) return [];
+  const legal = pl.zones.library.filter((c) => spec(c));
+  if (!legal.length) { if (shuffle) shuffleLibrary(g, playerId); return []; }
+  const n = Math.max(1, Math.min(count || 1, legal.length));
+  const data = { op: 'search', playerId, destination, tapped: !!tapped, shuffle: shuffle !== false, count: n };
+  return _searchAsk(g, playerId, legal, data, title, pl, n);
+}
+
+function _searchAsk(g, playerId, legal, data, title, pl, n) {
+  const where = data.destination === 'battlefield' ? 'Onto the battlefield'
+    : data.destination === 'hand' ? 'Into your hand' : `To your ${data.destination}`;
+  return askChoice(g, playerId, {
+    kind: 'search', picks: n, cards: legal, data,
+    apply: (answer) => applySearch(g, data, answerIds(answer)),
+    bot: (list) => defaultPick(g, list, 'search', n),
+    modal: {
+      title: title || (n > 1 ? `Search your library for ${n} cards` : 'Search your library for a card'),
+      note: `${where}. Every card in your library this effect can find is shown — ${legal.length} of ${pl.zones.library.length}.`,
+      zone: 'library', owner: playerId, destination: data.destination, pickCount: n,
+      rest: pl.zones.library.filter((c) => !legal.includes(c)).map((c) => c.iid),
+    },
+  });
+}
+
+function applySearch(g, data, iids) {
+  const pl = g.players[data.playerId];
+  const moved = [];
+  for (const iid of iids) {
+    const idx = pl.zones.library.findIndex((c) => c.iid === iid);
+    if (idx < 0) continue;
+    moved.push(pl.zones.library.splice(idx, 1)[0]);
+  }
+  if (!moved.length) return [];
+  // Shuffle first: a search always shuffles, and doing it before anything
+  // arrives means an entering permanent's own trigger can never leave the deck
+  // half-shuffled.
+  if (data.shuffle) shuffleLibrary(g, data.playerId);
+  g.emit({ type: 'searched', player: data.playerId, cards: moved.map((c) => c.iid) });
+  arriveSearched(g, data, moved, 0);
+  return moved;
+}
+
+/** Put the found cards where they belong; a suspension keeps the rest queued. */
+function arriveSearched(g, data, cards, from) {
+  const pl = g.players[data.playerId];
+  for (let i = from; i < cards.length; i++) {
+    const card = cards[i];
+    if (data.destination === 'battlefield') {
+      try { putPermanent(g, card, data.playerId, { tapped: data.tapped }); }
+      catch (e) {
+        if (!isDefer(e)) throw e;
+        pushDeferred(g, { ctx: null, steps: [], hasClosures: true, resume: (gg) => arriveSearched(gg, data, cards, i + 1) });
+        throw e;
+      }
     } else {
-      card.zone = destination;
-      pl.zones[destination].push(card);
+      card.zone = data.destination;
+      pl.zones[data.destination].push(card);
+      g.emit({ type: 'moved', player: data.playerId, card: card.iid, to: data.destination });
     }
   }
-  if (shuffle) shuffleLibrary(g, playerId);
-  if (found.length) g.emit({ type: 'searched', player: playerId, cards: found.map((c) => c.iid), ctx });
-  return found;
+}
+
+/**
+ * Look at the top `n` cards and put them back in an order the chooser picks:
+ * everything in `top` stays on top — left to right is the order they are drawn —
+ * and everything in `bottom` goes under the library. That is scry, and it is
+ * also what "look at the top three" means when the spell lets you reorder them.
+ */
+export function lookAtTop(g, playerId, n, ctx = {}, { title = null } = {}) {
+  const pl = g.players[playerId];
+  const looked = pl.zones.library.slice(0, Math.max(0, n));
+  if (!looked.length) return { top: [], bottom: [] };
+  const data = { op: 'topX', playerId, n: looked.length };
+  return askChoice(g, playerId, {
+    kind: 'topX', picks: looked.length, cards: looked, data,
+    apply: (answer) => applyTopX(g, data, answer),
+    bot: () => ({ top: [...looked].sort((a, b) => scoreCardForKeep(b, g) - scoreCardForKeep(a, g)), bottom: [] }),
+    modal: {
+      title: title || `Look at the top ${looked.length} card${looked.length === 1 ? '' : 's'} of your library`,
+      note: 'Click a card to send it to the other row. What is on top is drawn first.',
+      zone: 'library', owner: playerId, rows: true,
+      topLabel: 'Stays on top — left to right is the order you draw them',
+      bottomLabel: 'Goes to the bottom of the library',
+      top: looked.map((c) => c.iid), bottom: [],
+    },
+  });
+}
+
+function applyTopX(g, data, answer = {}) {
+  const pl = g.players[data.playerId];
+  const looked = pl.zones.library.slice(0, data.n);
+  const byIid = new Map(looked.map((c) => [c.iid, c]));
+  const pick = (list) => (list || []).map((x) => byIid.get(x && typeof x === 'object' ? x.iid : x)).filter(Boolean);
+  const top = pick(answer && (answer.top || (Array.isArray(answer) ? answer : answer.picks)));
+  const bottom = pick(answer && answer.bottom);
+  const missed = looked.filter((c) => !top.includes(c) && !bottom.includes(c));
+  pl.zones.library = [...top, ...missed, ...pl.zones.library.slice(looked.length), ...bottom];
+  g.emit({ type: 'lookedAtTop', player: data.playerId, cards: looked.map((c) => c.iid) });
+  return { top, bottom };
 }
 
 export function shuffleLibrary(g, playerId) {
@@ -532,6 +731,22 @@ export function discard(g, playerId, n, ctx = {}, chooser = null) {
   return chosen;
 }
 
+/** Discard exactly these cards (the ones a chooser named). */
+export function discardCards(g, playerId, iids, ctx = {}) {
+  const pl = g.players[playerId];
+  const out = [];
+  for (const iid of iids) {
+    const idx = pl.zones.hand.findIndex((c) => c.iid === iid);
+    if (idx < 0) continue;
+    const [card] = pl.zones.hand.splice(idx, 1);
+    card.zone = 'graveyard';
+    pl.zones.graveyard.push(card);
+    out.push(card);
+    g.emit({ type: 'discard', player: playerId, card: card.iid, ctx });
+  }
+  return out;
+}
+
 export function returnFromGraveyard(g, playerId, spec, destination = 'battlefield', ctx = {}) {
   const pl = g.players[playerId];
   const idx = pl.zones.graveyard.findIndex(spec);
@@ -554,10 +769,25 @@ export function returnFromGraveyard(g, playerId, spec, destination = 'battlefiel
 export function runEffects(g, ctx, steps) {
   if (!steps) return;
   const list = Array.isArray(steps) ? steps : [steps];
-  for (const step of list) {
+  for (let i = 0; i < list.length; i++) {
+    const step = list[i];
     if (!step) continue;
-    if (typeof step === 'function') { step(g, ctx); continue; }
-    runStep(g, ctx, step);
+    try {
+      if (typeof step === 'function') { step(g, ctx); continue; }
+      runStep(g, ctx, step);
+    } catch (e) {
+      if (!isDefer(e)) throw e;
+      // The question is on screen: keep what has not run yet so it can be run
+      // once the answer arrives. Innermost frame first, outer frames record
+      // their own tails as the exception unwinds through them.
+      const tail = list.slice(i + 1);
+      if (tail.length) {
+        const hasClosures = tail.some((s) => typeof s === 'function'
+          || (s && typeof s === 'object' && Object.values(s).some((v) => typeof v === 'function')));
+        pushDeferred(g, { ctx, steps: tail, hasClosures });
+      }
+      throw e;
+    }
   }
 }
 
@@ -612,9 +842,12 @@ function runStep(g, ctx, step) {
     case 'exile': for (const t of targetsOf(g, ctx, step)) exile(g, findPermanent(g, t?.iid ?? t), ctx); return;
     case 'exileAll': for (const p of allMatching(g, step.filter, ctx)) exile(g, p, ctx); return;
     case 'sacrifice': {
-      const who = step.who === 'each' ? null : (step.player ?? me);
-      if (who === null) { for (const pl of g.players) sacrificeAll(g, pl.id, step.filter, step.n || 1, ctx); return; }
-      sacrificeAll(g, who, step.filter, step.n || 1, ctx);
+      const who = step.who === 'each' ? g.players.map((p) => p.id) : [step.player ?? me];
+      // Bot seats go first: asking the human suspends the resolution, and
+      // anything after that suspension inside this op would be lost.
+      const ordered = [...who.filter((p) => !(p === g.humanId && g.interactive === true && !g.humanIsBot)),
+        ...who.filter((p) => p === g.humanId && g.interactive === true && !g.humanIsBot)];
+      for (const pid of ordered) sacrificeAll(g, pid, step.filter, step.n || 1, ctx, step);
       return;
     }
     case 'sacrificeSelf': sacrifice(g, ctx.source, ctx); return;
@@ -647,13 +880,20 @@ function runStep(g, ctx, step) {
     case 'untap': for (const t of targetsOf(g, ctx, step)) untap(g, findPermanent(g, t?.iid ?? t)); return;
     case 'untapAll': for (const p of allMatching(g, step.filter, ctx)) untap(g, p); return;
     case 'tap': for (const t of targetsOf(g, ctx, step)) tapPermanent(g, findPermanent(g, t?.iid ?? t)); return;
-    case 'search': searchLibrary(g, me, buildSearchPredicate(step), step, ctx); return;
-    case 'searchBasics': {
-      for (let i = 0; i < (step.n || 1); i++) {
-        searchLibrary(g, me, (c) => isBasicLand(c) && (step.type ? c.subtypes.includes(step.type) : true), { destination: step.destination || 'battlefield', tapped: step.tapped ?? true }, ctx);
-      }
+    case 'search':
+      // One question with every legal card in it, rather than N questions in a
+      // loop: a suspension mid-loop would lose the rest of the loop.
+      searchLibrary(g, me, buildSearchPredicate(step), {
+        destination: step.destination || 'hand', tapped: step.tapped ?? false,
+        count: step.n || 1, title: step.title || describeSearch(step.filter || {}),
+      }, ctx);
       return;
-    }
+    case 'searchBasics':
+      searchLibrary(g, me, (c) => isBasicLand(c) && (step.type ? c.subtypes.includes(step.type) : true), {
+        destination: step.destination || 'battlefield', tapped: step.tapped ?? true,
+        count: step.n || 1, title: step.title || `Search your library for ${step.n > 1 ? `${step.n} basic lands` : 'a basic land'}`,
+      }, ctx);
+      return;
     case 'shuffle': shuffleLibrary(g, me); return;
     case 'reanimate': {
       const card = returnFromGraveyard(g, step.who === 'opponent' ? otherPlayer(g, me) : me, (c) => specMatches(g, ctx, { kind: 'permanent', filter: step.filter || { creature: true } }, c), 'battlefield', ctx);
@@ -677,16 +917,11 @@ function runStep(g, ctx, step) {
       runEffects(g, ctx, truthy ? step.then : step.otherwise);
       return;
     }
-    case 'scryLike': {
-      // Deterministic, low-friction library smoothing (Bot + human share this):
-      // keep the best card on top, put the rest on the bottom.
-      const pl = g.players[me];
-      const look = pl.zones.library.slice(0, step.n || 1);
-      if (look.length < 2) return;
-      look.sort((a, b) => scoreCardForKeep(b, g) - scoreCardForKeep(a, g));
-      pl.zones.library = [...look, ...pl.zones.library.slice(look.length)];
+    case 'scryLike':
+      // The player gets to look at the real top cards and put them back in the
+      // order they want (the bot keeps the best one on top).
+      lookAtTop(g, me, step.n || 1, ctx, { title: step.title || null });
       return;
-    }
     case 'lookTop': {
       const pl = g.players[me];
       const top = pl.zones.library.shift();
@@ -694,6 +929,8 @@ function runStep(g, ctx, step) {
       if (step.destination === 'battlefield') putPermanent(g, top, me, {});
       else if (step.destination === 'hand') { top.zone = 'hand'; pl.zones.hand.push(top); }
       else { top.zone = 'graveyard'; pl.zones.graveyard.push(top); }
+      // The card itself is public information: say which one it was.
+      g.emit({ type: 'revealed', player: me, card: top.iid, destination: step.destination || 'graveyard', ctx });
       return;
     }
     case 'fireCombo': g.fireCombo(step.name, step.cards || [], ctx); return;
@@ -705,16 +942,40 @@ function runStep(g, ctx, step) {
 
 function otherPlayer(g, me) { return g.players.find((p) => p.id !== me)?.id ?? me; }
 
-function sacrificeAll(g, playerId, filter, n, ctx) {
-  const pl = g.players[playerId];
+function sacrificeAll(g, playerId, filter, n, ctx, step = {}) {
   const spec = typeof filter === 'function' ? filter : (p) => specMatches(g, { ...ctx, controller: playerId }, { kind: 'permanent', filter: filter || {} }, p);
+  const candidates = () => g.battlefield.filter((p) => p.controller === playerId && spec(p));
+  const humanSeat = playerId === g.humanId && g.interactive === true && !g.humanIsBot;
+  if (humanSeat) {
+    const list = candidates();
+    if (!list.length) return;
+    const count = Math.max(1, Math.min(n, list.length));
+    const data = { op: 'sacrifice', playerId, n: count };
+    askChoice(g, playerId, {
+      kind: 'sacrifice', picks: count, cards: list, data,
+      apply: (answer) => {
+        const out = [];
+        for (const iid of answerIds(answer)) {
+          const p = g.battlefield.find((x) => x.iid === iid);
+          if (p) { sacrifice(g, p, ctx); out.push(p); }
+        }
+        return out;
+      },
+      bot: (c) => [...c].sort((a, b) => permValue(g, a) - permValue(g, b)).slice(0, count),
+      modal: {
+        title: count > 1 ? `Sacrifice ${count} permanents` : 'Sacrifice a permanent',
+        note: step.note || 'This effect makes you choose — pick what you can afford to lose.',
+        zone: 'battlefield', owner: playerId, pickCount: count,
+      },
+    });
+    return;
+  }
   for (let i = 0; i < n; i++) {
-    const candidates = g.battlefield.filter((p) => p.controller === playerId && spec(p));
-    if (!candidates.length) return;
+    const list = candidates();
+    if (!list.length) return;
     // deterministic choice: weakest permanent
-    candidates.sort((a, b) => permValue(g, a) - permValue(g, b));
-    const pick = (playerId === g.humanId && g.requestChoice) ? (g.chooseFrom(candidates, 'sacrifice') || candidates[0]) : candidates[0];
-    sacrifice(g, pick, ctx);
+    list.sort((a, b) => permValue(g, a) - permValue(g, b));
+    sacrifice(g, list[0], ctx);
   }
 }
 
@@ -729,15 +990,42 @@ export function permValue(g, p) {
 
 function discardTarget(g, ctx, step) {
   const who = step.who === 'opponent' ? otherPlayer(g, ctx.controller) : ctx.controller;
-  const chooser = (hand, game, playerId) => {
-    if (playerId === g.humanId && g.requestChoice) {
-      const picked = g.chooseFrom(hand, 'discard');
-      if (picked) return picked;
-    }
-    // deterministic bot choice: dump the least useful card
-    return [...hand].sort((a, b) => scoreCardForKeep(a, g) - scoreCardForKeep(b, g))[0];
-  };
-  discard(g, who, step.n || 1, ctx, chooser);
+  const n = step.n || 1;
+  const hand = g.players[who].zones.hand;
+  if (!hand.length) return;
+  const worst = (h) => [...h].sort((a, b) => scoreCardForKeep(a, g) - scoreCardForKeep(b, g))[0];
+  const humanSeat = who === g.humanId && g.interactive === true && !g.humanIsBot;
+  if (humanSeat) {
+    const data = { op: 'discard', playerId: who, n };
+    askChoice(g, who, {
+      kind: 'discard', picks: n, cards: hand, data,
+      apply: (answer) => discardCards(g, who, answerIds(answer), ctx),
+      bot: (list) => [...list].sort((a, b) => scoreCardForKeep(a, g) - scoreCardForKeep(b, g)).slice(0, n),
+      modal: {
+        title: n > 1 ? `Discard ${n} cards` : 'Discard a card',
+        note: step.note || 'Pick the card you give up — every card in your hand is here.',
+        zone: 'hand', owner: who, pickCount: n,
+      },
+    });
+    return;
+  }
+  discard(g, who, n, ctx, worst);
+}
+
+/** "Search your library for a creature (power 2 or less)" — used as a modal title. */
+function describeSearch(f = {}) {
+  const what = [];
+  if (f.basic) what.push('basic land');
+  else if (f.land) what.push('land');
+  else if (f.creature) what.push(f.subtype ? `${f.subtype} creature` : 'creature');
+  else if (f.type) what.push(f.type.toLowerCase());
+  else if (f.subtype) what.push(f.subtype);
+  if (f.name) what.push(f.name);
+  const limits = [];
+  if (f.manaValueMax !== undefined) limits.push(`mana value ${f.manaValueMax} or less`);
+  if (f.powerMax !== undefined) limits.push(`power ${f.powerMax} or less`);
+  if (f.toughnessMax !== undefined) limits.push(`toughness ${f.toughnessMax} or less`);
+  return `Search your library for a ${what.join(' ') || 'card'}${limits.length ? ` (${limits.join(', ')})` : ''}`;
 }
 
 function buildSearchPredicate(step) {
